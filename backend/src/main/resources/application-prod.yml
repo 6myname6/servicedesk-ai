@@ -1,0 +1,6 @@
+logging:
+  level:
+    root: WARN
+    com.servicedesk: INFO
+  file:
+    name: ./logs/servicedesk-ai.log

@@ -1,0 +1,4 @@
+logging:
+  level:
+    com.servicedesk: DEBUG
+    com.servicedesk.mapper: DEBUG
