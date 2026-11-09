@@ -207,7 +207,7 @@ erDiagram
 | `role` | VARCHAR(16) | 否 | — | `REPORTER/ENGINEER/SUPERVISOR/ADMIN` |
 | `team_id` | BIGINT | 是 | NULL | 所属团队 |
 | `phone` | VARCHAR(20) | 是 | NULL | 手机号 |
-| `email` | VARCHAR(64) | 是 | NULL | 邮箱 |
+| `email` | VARCHAR(64) | 是 | NULL | 邮箱，唯一；邮箱验证码注册时必填，管理员创建的账号可为空 |
 | `status` | TINYINT | 否 | 1 | 1 启用 / 0 停用 |
 | `created_at` | DATETIME | 否 | CURRENT_TIMESTAMP | 创建时间 |
 | `updated_at` | DATETIME | 否 | CURRENT_TIMESTAMP ON UPDATE | 更新时间 |
@@ -425,6 +425,7 @@ erDiagram
 | 表 | 索引 | 类型 | 用途 |
 | --- | --- | --- | --- |
 | `sys_user` | `uk_username(username)` | 唯一 | 登录 |
+| `sys_user` | `uk_email(email)` | 唯一 | 邮箱登录与注册去重；允许多个 NULL |
 | `sys_user` | `idx_team_role(team_id, role)` | 普通 | 团队/角色查询 |
 | `team` | `uk_name(name)` | 唯一 | 团队名 |
 | `team` | `idx_supervisor(supervisor_id)` | 普通 | 主管查团队 |
