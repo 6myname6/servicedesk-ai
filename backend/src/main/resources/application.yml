@@ -12,15 +12,23 @@ spring:
     date-format: yyyy-MM-dd'T'HH:mm:ss
     time-zone: Asia/Shanghai
   datasource:
-    url: jdbc:mysql://localhost:3306/servicedesk?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+    url: jdbc:mysql://localhost:3306/servicedesk_ai?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
     username: root
-    password: ${DB_PASSWORD:root}
+    password: ${DB_PASSWORD:123456}
     driver-class-name: com.mysql.cj.jdbc.Driver
   data:
     redis:
       host: localhost
       port: 6379
+      password: ${REDIS_PASSWORD:123456}
       database: 0
+      timeout: 3s
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: 2s
 
 mybatis-plus:
   configuration:
@@ -29,6 +37,20 @@ mybatis-plus:
     db-config:
       id-type: auto
   mapper-locations: classpath*:/mapper/**/*.xml
+
+jwt:
+  secret: ${JWT_SECRET:servicedesk-ai-dev-only-secret-key-0123456789abcdef}
+  expire-seconds: 604800
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+    operations-sorter: method
+    display-request-duration: true
+  packages-to-scan: com.servicedesk.controller
 
 logging:
   level:
