@@ -3,11 +3,12 @@ package com.servicedesk.controller;
 import com.servicedesk.common.api.Result;
 import com.servicedesk.common.exception.BusinessException;
 import com.servicedesk.dto.request.auth.LoginRequest;
+import com.servicedesk.security.ClientIpResolver;
 import com.servicedesk.service.AuthService;
 import com.servicedesk.vo.LoginVO;
 import com.servicedesk.vo.UserVO;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -26,7 +27,6 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @Slf4j
 @RestController
-@RequiredArgsConstructor
 @RequestMapping("/auth")
 public class AuthController {
 
@@ -36,16 +36,37 @@ public class AuthController {
   /** 认证服务。 */
   private final AuthService authService;
 
+  /** 客户端 IP 解析器，为登录失败限流提供 IP 维度。 */
+  private final ClientIpResolver clientIpResolver;
+
+  /**
+   * 构造认证接口。
+   *
+   * @param authService      认证服务
+   * @param clientIpResolver 客户端 IP 解析器
+   */
+  public AuthController(AuthService authService, ClientIpResolver clientIpResolver) {
+    this.authService = authService;
+    this.clientIpResolver = clientIpResolver;
+  }
+
   /**
    * 用户名密码登录。
    *
-   * @param request 登录请求
+   * <p>
+   * 客户端 IP 由本层解析后显式传给服务层，避免服务层依赖 Servlet API；
+   * 解析规则见 {@link ClientIpResolver}，默认不信任 {@code X-Forwarded-For}。
+   * </p>
+   *
+   * @param request     登录请求
+   * @param httpRequest 当前 HTTP 请求，用于取客户端 IP
    * @return token、有效期与用户信息
    */
   @PostMapping("/login")
-  public Result<LoginVO> login(@RequestBody @Valid LoginRequest request) {
-    log.debug("收到登录请求, username={}", request.getUsername());
-    return Result.success(authService.login(request));
+  public Result<LoginVO> login(@RequestBody @Valid LoginRequest request, HttpServletRequest httpRequest) {
+    String clientIp = clientIpResolver.resolve(httpRequest);
+    log.debug("收到登录请求, username={}, ip={}", request.getUsername(), clientIp);
+    return Result.success(authService.login(request, clientIp));
   }
 
   /**

@@ -42,6 +42,13 @@ jwt:
   secret: ${JWT_SECRET:servicedesk-ai-dev-only-secret-key-0123456789abcdef}
   expire-seconds: 604800
 
+app:
+  client-ip:
+    # 是否信任 X-Forwarded-For 里的客户端地址。
+    # 仅当应用部署在可信反向代理（Nginx 等）之后才可开启；直连部署时开启，
+    # 攻击者可伪造该请求头，每次换一个伪造 IP 即可绕过 IP 维度限流。
+    trust-proxy: ${TRUST_PROXY:false}
+
 springdoc:
   api-docs:
     path: /v3/api-docs

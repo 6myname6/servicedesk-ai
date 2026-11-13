@@ -1,6 +1,8 @@
 package com.servicedesk.security;
 
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtException;
+
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
@@ -49,15 +51,20 @@ public class TokenBlackList {
      * @param token
      */
     public void addBlackList(String token) {
-        Claims claims = jwtUtil.parseClaims(token);
-        Date expiration = claims.getExpiration();
-        long ttlMs = expiration.getTime() - System.currentTimeMillis();
-        if (ttlMs <= 0) {
-            ttlMs = 1000L;
+        try {
+            Claims claims = jwtUtil.parseClaims(token);
+            Date expiration = claims.getExpiration();
+            long ttlMs = expiration.getTime() - System.currentTimeMillis();
+            if (ttlMs <= 0) {
+                ttlMs = 1000L;
+            }
+            String key = TOKEN_BLACKLIST_KEY_PREFIX + sha256Hex(token);
+            stringRedisTemplate.opsForValue().set(key, "1", ttlMs, TimeUnit.MILLISECONDS);
+            log.info("剩余秒数：{}", ttlMs / 1000);
+        } catch (JwtException | IllegalArgumentException e) {
+            log.warn("登出时token无效，忽略，reason={}", e.getMessage());
+            return;
         }
-        String key = TOKEN_BLACKLIST_KEY_PREFIX + sha256Hex(token);
-        stringRedisTemplate.opsForValue().set(key, "1", ttlMs, TimeUnit.MILLISECONDS);
-        log.info("剩余秒数：{}", ttlMs / 1000);
     }
 
     /**

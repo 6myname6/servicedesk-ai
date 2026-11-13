@@ -48,6 +48,22 @@ class AuthControllerTest {
   /** 黑名单键前缀，与 TokenBlackList 保持一致。 */
   private static final String BLACKLIST_PREFIX = "auth:blacklist:";
 
+  /** 登录失败计数的账号维度键前缀，与 LoginRateLimiter 保持一致。 */
+  private static final String LOGIN_FAIL_USER_PREFIX = "auth:loginFail:user:";
+
+  /** 登录失败计数的 IP 维度键前缀，与 LoginRateLimiter 保持一致。 */
+  private static final String LOGIN_FAIL_IP_PREFIX = "auth:loginFail:ip:";
+
+  /**
+   * MockMvc 模拟请求的默认客户端地址。
+   *
+   * <p>
+   * 所有用例共用这一个地址，若不清理，跨用例、跨轮次的失败次数会在 5 分钟窗口内累加，
+   * 累计到阈值后整套用例会被 IP 维度限流打成 429，形成难以复现的随机失败。
+   * </p>
+   */
+  private static final String MOCK_CLIENT_IP = "127.0.0.1";
+
   /** MockMvc 入口。 */
   @Autowired
   private MockMvc mockMvc;
@@ -105,6 +121,25 @@ class AuthControllerTest {
       stringRedisTemplate.delete(BLACKLIST_PREFIX + TokenBlackList.sha256Hex(token));
     }
     issuedTokens.clear();
+    clearLoginFailCounters();
+  }
+
+  /**
+   * 清理登录失败计数的两个维度，避免用例之间与跨轮次累积。
+   *
+   * <p>
+   * 两个维度都必须清：账号维度不清理会让后续用例一开始就接近锁定阈值；
+   * IP 维度不清理则会在 5 分钟窗口内跨轮次累加，最终把整个测试类打成 429。
+   * </p>
+   */
+  private void clearLoginFailCounters() {
+    stringRedisTemplate.delete(LOGIN_FAIL_IP_PREFIX + MOCK_CLIENT_IP);
+    if (activeUser != null) {
+      stringRedisTemplate.delete(LOGIN_FAIL_USER_PREFIX + activeUser.getUsername());
+    }
+    if (disabledUser != null) {
+      stringRedisTemplate.delete(LOGIN_FAIL_USER_PREFIX + disabledUser.getUsername());
+    }
   }
 
   /**
@@ -156,6 +191,37 @@ class AuthControllerTest {
             .content(loginBody("no_such_user", RAW_PASSWORD)))
         .andExpect(status().isUnauthorized())
         .andExpect(jsonPath("$.message").value("用户名或密码错误"));
+  }
+
+  /**
+   * 换用户名撞库：同一 IP 用 20 个不存在的用户名各失败一次，第 21 次必须被 IP 维度拦下。
+   *
+   * <p>
+   * 这条用例同时验证两件事：接口层确实把客户端 IP 解析并传给了服务层；
+   * IP 维度的判定发生在密码校验之前——最后一次请求用的是完全正确的账号密码，
+   * 仍然应当拿到 429 而不是 200。
+   * </p>
+   *
+   * @throws Exception MockMvc 调用异常
+   */
+  @Test
+  @DisplayName("IP 维度限流：同一 IP 连续 20 次失败后返回 429")
+  void shouldLockIpAfterManyFailures() throws Exception {
+    // 先清掉可能来自上一轮执行或手工联调的残留计数，保证从 0 开始累计，避免用例随机失败
+    stringRedisTemplate.delete(LOGIN_FAIL_IP_PREFIX + MOCK_CLIENT_IP);
+
+    for (int i = 0; i < 20; i++) {
+      mockMvc.perform(post("/auth/login")
+              .contentType(MediaType.APPLICATION_JSON)
+              .content(loginBody("no_such_user_" + i, "WrongPass1")))
+          .andExpect(status().isUnauthorized());
+    }
+
+    mockMvc.perform(post("/auth/login")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(loginBody(activeUser.getUsername(), RAW_PASSWORD)))
+        .andExpect(status().isTooManyRequests())
+        .andExpect(jsonPath("$.code").value(429));
   }
 
   /**
