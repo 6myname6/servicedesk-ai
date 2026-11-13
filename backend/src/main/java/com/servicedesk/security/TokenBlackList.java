@@ -44,7 +44,9 @@ public class TokenBlackList {
     }
 
     /**
-     * 加入黑名单
+     * 添加黑名单
+     * 
+     * @param token
      */
     public void addBlackList(String token) {
         Claims claims = jwtUtil.parseClaims(token);
