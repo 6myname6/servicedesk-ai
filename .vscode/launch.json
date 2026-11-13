@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "java",
+      "name": "Debug ServiceDesk AI",
+      "request": "launch",
+      "mainClass": "com.servicedesk.ServiceDeskApplication",
+      "projectName": "servicedesk-ai",
+      "cwd": "${workspaceFolder}/backend"
+    }
+  ]
+}
