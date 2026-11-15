@@ -12,11 +12,17 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 /**
- * 登录鉴权拦截器，负责解析 token 并写入用户上下文。
+ * 登录鉴权拦截器，负责解析 token、校验登录态并写入用户上下文。
  *
  * <p>
  * 属于鉴权基础设施层。执行顺序：取请求头 → 校验 Bearer 格式 → 查 Redis 黑名单 →
- * 验签解析 → 写入 {@link UserContext}。任一步失败抛 401，由全局异常处理器统一输出。
+ * 验签解析 → 查账号停用标记 → 写入 {@link UserContext}。任一步失败抛 401，由全局异常处理器统一输出。
+ * </p>
+ *
+ * <p>
+ * 停用检查必须放在验签之后：标记按 userId 存储，而 userId 只能来自验签通过的载荷，
+ * 否则任何人报一个 ID 就能试探某个账号是否被停用。也必须放在 {@link UserContext#set} 之前，
+ * 避免被拒绝的请求把身份写进线程上下文。
  * </p>
  *
  * <p>
@@ -41,6 +47,9 @@ public class AuthInterceptor implements HandlerInterceptor {
   /** 登出黑名单，命中说明 token 已失效。 */
   private final TokenBlackList tokenBlackList;
 
+  /** 账号停用标记，命中说明该账号已被管理员停用，需立即失去访问能力。 */
+  private final UserStatusCache userStatusCache;
+
   /**
    * 请求进入前校验身份并填充上下文。
    *
@@ -48,7 +57,7 @@ public class AuthInterceptor implements HandlerInterceptor {
    * @param response 当前响应
    * @param handler  处理器
    * @return true 放行
-   * @throws BusinessException 未携带、已登出、过期或伪造 token 时抛 401
+   * @throws BusinessException 未携带、已登出、已过期、被伪造或账号已停用时抛 401
    */
   @Override
   public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
@@ -72,6 +81,10 @@ public class AuthInterceptor implements HandlerInterceptor {
     } catch (BusinessException e) {
       log.warn("token 校验失败, uri={}, reason={}", request.getRequestURI(), e.getMessage());
       throw e;
+    }
+    if (userStatusCache.isDisabled(loginUser.id())) {
+      log.warn("账号{}已被禁用", loginUser.id());
+      throw new BusinessException(401, "账号已被禁用,请联系管理员");
     }
     UserContext.set(loginUser);
     return true;

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import lombok.Getter;
 
 import java.util.List;
+import java.util.function.Function;
 
 /**
  * 分页响应结构，接口出参统一使用本类，不直接暴露 MyBatis-Plus 的 {@link IPage}。
@@ -60,6 +61,29 @@ public class PageResult<T> {
     public static <T> PageResult<T> from(IPage<T> page) {
         return new PageResult<>(
                 page.getRecords(),
+                page.getTotal(),
+                page.getCurrent(),
+                page.getSize(),
+                page.getPages());
+    }
+
+    /**
+     * 把分页查询结果转换并映射为对外的分页响应。
+     *
+     * <p>
+     * 用于「查出来是实体、返回给前端是 VO」的场景：总数与页码依旧来自分页插件，
+     * 只有记录元素被逐个转换，避免 Service 里手工拼 total 导致口径与插件不一致。
+     * </p>
+     *
+     * @param page   分页查询结果，不能为 null
+     * @param mapper 实体到视图对象的转换函数，不能为 null
+     * @param <T>    源记录类型
+     * @param <R>    目标记录类型
+     * @return 记录已转换的分页响应，records 不会是 null
+     */
+    public static <T, R> PageResult<R> from(IPage<T> page, Function<T, R> mapper) {
+        return new PageResult<>(
+                page.getRecords().stream().map(mapper).toList(),
                 page.getTotal(),
                 page.getCurrent(),
                 page.getSize(),
