@@ -1,6 +1,7 @@
 package com.servicedesk.security;
 
 import jakarta.servlet.http.HttpServletRequest;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 /**
@@ -24,6 +25,7 @@ import org.springframework.stereotype.Component;
  * </p>
  */
 @Component
+@RequiredArgsConstructor
 public class ClientIpResolver {
 
   /** 反向代理链路中记录客户端地址的请求头。 */
@@ -45,17 +47,8 @@ public class ClientIpResolver {
    */
   private static final int MAX_IP_LENGTH = 64;
 
-  /** 是否信任代理传递的客户端地址。 */
-  private final boolean trustProxy;
-
-  /**
-   * 构造解析器。
-   *
-   * @param properties 客户端 IP 配置，不能为 null
-   */
-  public ClientIpResolver(ClientIpProperties properties) {
-    this.trustProxy = properties.trustProxy();
-  }
+  /** 客户端 IP 解析配置，决定是否信任代理传递的地址。 */
+  private final ClientIpProperties properties;
 
   /**
    * 解析当前请求的客户端 IP。
@@ -64,7 +57,7 @@ public class ClientIpResolver {
    * @return 非空白的客户端 IP；无法解析时返回 {@code unknown}
    */
   public String resolve(HttpServletRequest request) {
-    if (trustProxy) {
+    if (properties.trustProxy()) {
       String forwarded = firstForwardedAddress(request);
       if (forwarded != null) {
         return forwarded;

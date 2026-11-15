@@ -15,6 +15,8 @@ import com.servicedesk.security.TokenBlackList;
 import com.servicedesk.service.AuthService;
 import com.servicedesk.vo.LoginVO;
 import com.servicedesk.vo.UserVO;
+
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.dao.DataAccessException;
@@ -35,6 +37,7 @@ import org.springframework.stereotype.Service;
  */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class AuthServiceImpl implements AuthService {
 
     /** 启用状态的取值，对应 sys_user.status。 */
@@ -56,30 +59,6 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder;
     /** 登录频控器，按账号与客户端 IP 两个维度限制失败次数。 */
     private final LoginRateLimiter loginRateLimiter;
-
-    /**
-     * 构造认证服务。
-     *
-     * @param sysUserMapper     用户账号 Mapper
-     * @param teamMapper        团队 Mapper
-     * @param jwtUtil           JWT 工具
-     * @param tokenBlackList    登出黑名单
-     * @param passwordEncoder   密码编码器
-     * @param loginRateLimiter  登录频控器
-     */
-    public AuthServiceImpl(SysUserMapper sysUserMapper,
-                           TeamMapper teamMapper,
-                           JwtUtil jwtUtil,
-                           TokenBlackList tokenBlackList,
-                           PasswordEncoder passwordEncoder,
-                           LoginRateLimiter loginRateLimiter) {
-        this.sysUserMapper = sysUserMapper;
-        this.teamMapper = teamMapper;
-        this.jwtUtil = jwtUtil;
-        this.tokenBlackList = tokenBlackList;
-        this.passwordEncoder = passwordEncoder;
-        this.loginRateLimiter = loginRateLimiter;
-    }
 
     /**
      * 用户名密码登录。

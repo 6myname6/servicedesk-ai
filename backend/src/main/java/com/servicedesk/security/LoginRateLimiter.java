@@ -2,6 +2,7 @@ package com.servicedesk.security;
 
 import com.servicedesk.common.exception.BusinessException;
 import com.servicedesk.common.utils.RedisAtomicCounter;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
@@ -26,6 +27,7 @@ import org.springframework.stereotype.Component;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class LoginRateLimiter {
 
   /** 账号维度：同一账号在窗口内允许的最大失败次数。 */
@@ -74,17 +76,6 @@ public class LoginRateLimiter {
 
   /** 原子计数器，提供「自增 + 首次设置 TTL」原语。 */
   private final RedisAtomicCounter redisAtomicCounter;
-
-  /**
-   * 构造限流器。
-   *
-   * @param stringRedisTemplate Redis 模板
-   * @param redisAtomicCounter  原子计数器
-   */
-  public LoginRateLimiter(StringRedisTemplate stringRedisTemplate, RedisAtomicCounter redisAtomicCounter) {
-    this.stringRedisTemplate = stringRedisTemplate;
-    this.redisAtomicCounter = redisAtomicCounter;
-  }
 
   /**
    * 校验账号维度是否已被锁定。必须在查库之前调用，被锁定的请求不应再消耗数据库连接。

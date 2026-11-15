@@ -9,6 +9,7 @@ import com.servicedesk.vo.LoginVO;
 import com.servicedesk.vo.UserVO;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,6 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @Slf4j
 @RestController
+@RequiredArgsConstructor
 @RequestMapping("/auth")
 public class AuthController {
 
@@ -38,17 +40,6 @@ public class AuthController {
 
   /** 客户端 IP 解析器，为登录失败限流提供 IP 维度。 */
   private final ClientIpResolver clientIpResolver;
-
-  /**
-   * 构造认证接口。
-   *
-   * @param authService      认证服务
-   * @param clientIpResolver 客户端 IP 解析器
-   */
-  public AuthController(AuthService authService, ClientIpResolver clientIpResolver) {
-    this.authService = authService;
-    this.clientIpResolver = clientIpResolver;
-  }
 
   /**
    * 用户名密码登录。
