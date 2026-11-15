@@ -82,9 +82,16 @@ public class AuthInterceptor implements HandlerInterceptor {
       log.warn("token 校验失败, uri={}, reason={}", request.getRequestURI(), e.getMessage());
       throw e;
     }
-    if (userStatusCache.isDisabled(loginUser.id())) {
-      log.warn("账号{}已被禁用", loginUser.id());
-      throw new BusinessException(401, "账号已被禁用,请联系管理员");
+    try {
+      if (userStatusCache.isDisabled(loginUser.id())) {
+        log.warn("账号{}已被禁用", loginUser.id());
+        throw new BusinessException(401, "账号已被禁用,请联系管理员");
+      }
+    } catch (BusinessException e) {
+      throw e;
+    } catch (Exception e) {
+      log.error("检查账号{}状态失败", loginUser.id(), e);
+      throw new BusinessException(503, "检查账号" + loginUser.id() + "状态失败");
     }
     UserContext.set(loginUser);
     return true;
