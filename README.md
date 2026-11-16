@@ -28,7 +28,7 @@
 | 前端 | Vue 3 + Vite + Pinia + Element Plus + ECharts |
 | 鉴权 | JWT + 拦截器 + ThreadLocal 用户上下文 |
 | 向量 | PostgreSQL 16 + pgvector（`vector(1024)`，HNSW 召回） |
-| 本地存储 | `./storage`（附件），后续可替换 OSS |
+| 对象存储 | 阿里云 OSS（附件 / 知识库文档；`FileStorageService` 接口可替换 MinIO/S3） |
 | 部署 | Docker Compose |
 
 ## 命名约定

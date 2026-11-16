@@ -11,6 +11,9 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 
 import java.util.stream.Collectors;
 
@@ -33,6 +36,9 @@ public class GlobalExceptionHandler {
 
   /** 参数类错误统一状态码。 */
   private static final int BAD_REQUEST = 400;
+
+  /** 上传文件超过大小上限的状态码。 */
+  private static final int PAYLOAD_TOO_LARGE = 413;
 
   /** 未知异常状态码。 */
   private static final int INTERNAL_ERROR = 500;
@@ -110,6 +116,75 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(HttpMessageNotReadableException.class)
   public ResponseEntity<Result<Void>> handleMessageNotReadable(HttpMessageNotReadableException ex) {
     return buildResponse(BAD_REQUEST, "请求体格式不正确");
+  }
+
+  /**
+   * 处理缺少 multipart 文件字段。
+   *
+   * @param ex 缺少请求部件异常
+   * @return code=400 的响应体
+   */
+  @ExceptionHandler(MissingServletRequestPartException.class)
+  public ResponseEntity<Result<Void>> handleMissingPart(MissingServletRequestPartException ex) {
+    return buildResponse(BAD_REQUEST, "缺少必填参数: " + ex.getRequestPartName());
+  }
+
+  /**
+   * 处理上传文件超过容器上限（{@code spring.servlet.multipart.max-file-size}）。
+   *
+   * <p>
+   * 业务层的扩展名/大小校验见 {@code FileAttachmentServiceImpl}；本处理器只兜住
+   * 请求还没进控制器就被容器拒绝的情况，统一返回 413 而不是 500。
+   * </p>
+   *
+   * @param ex 超限异常
+   * @return code=413 的响应体
+   */
+  @ExceptionHandler(MaxUploadSizeExceededException.class)
+  public ResponseEntity<Result<Void>> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
+    log.warn("上传文件超过容器大小上限: {}", ex.getMessage());
+    return buildResponse(PAYLOAD_TOO_LARGE, "文件大小超过限制");
+  }
+
+  /**
+   * 处理 multipart 解析失败，区分「超过容器上限」与「请求格式不对」。
+   *
+   * <p>
+   * Servlet 容器（如 Tomcat）把超限异常包在 {@link MultipartException} 里，异常类型
+   * 因容器而异，因此沿 cause 链判断类型名与消息，避免把 413 误报成 500。
+   * </p>
+   *
+   * @param ex multipart 解析异常
+   * @return 超限返回 413，其余返回 400
+   */
+  @ExceptionHandler(MultipartException.class)
+  public ResponseEntity<Result<Void>> handleMultipart(MultipartException ex) {
+    if (isSizeExceeded(ex)) {
+      log.warn("上传文件超过容器大小上限: {}", ex.getMessage());
+      return buildResponse(PAYLOAD_TOO_LARGE, "文件大小超过限制");
+    }
+    log.warn("文件上传请求解析失败: {}", ex.getMessage());
+    return buildResponse(BAD_REQUEST, "文件上传请求格式不正确");
+  }
+
+  /**
+   * 判断异常链里是否包含「文件超限」。
+   *
+   * @param ex 异常
+   * @return true 表示由大小超限引起
+   */
+  private boolean isSizeExceeded(Throwable ex) {
+    Throwable current = ex;
+    while (current != null) {
+      if (current instanceof MaxUploadSizeExceededException
+          || current.getClass().getSimpleName().contains("SizeLimitExceeded")
+          || (current.getMessage() != null
+              && current.getMessage().toLowerCase().contains("size"))) {
+        return true;
+      }
+      current = current.getCause();
+    }
+    return false;
   }
 
   /**

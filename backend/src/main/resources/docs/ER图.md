@@ -312,7 +312,7 @@ erDiagram
 | `ticket_id` | BIGINT | 是 | NULL | 工单；上传后未关联时为 NULL，建单时回填 |
 | `uploader_id` | BIGINT | 否 | — | 上传人 |
 | `file_name` | VARCHAR(255) | 否 | — | 原始文件名 |
-| `file_url` | VARCHAR(512) | 否 | — | 访问 URL |
+| `file_url` | VARCHAR(512) | 否 | — | 访问 URL（阿里云 OSS 公网地址） |
 | `file_size` | BIGINT | 否 | 0 | 字节 |
 | `mime_type` | VARCHAR(64) | 是 | NULL | MIME |
 | `created_at` | DATETIME | 否 | CURRENT_TIMESTAMP | 上传时间 |
