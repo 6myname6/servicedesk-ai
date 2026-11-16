@@ -3,6 +3,7 @@
 > 版本：V1.0　｜　日期：2026-10-27
 > 关联：[产品文档](产品文档.md) ｜ [接口文档](接口文档.md)
 > 约定：MySQL 8.0 / utf8mb4 / InnoDB；逻辑外键（不建物理 FK）；所有表带 `created_at`，可变表带 `updated_at`。
+> 向量存储：PostgreSQL 16 + pgvector，`kb_chunk` 整表落在 PG 库 `servicedesk_kb`，其余 13 张表在 MySQL，不混存。
 
 ---
 
@@ -12,7 +13,7 @@
 - 表名小写下划线；Java 实体用大驼峰，Mapper 以 `Mapper` 结尾。
 - 金额用 `DECIMAL`，时间用 `DATETIME`，布尔用 `TINYINT(1)`。
 - 枚举一律存字符串，不存魔法数字，便于排查和扩展。
-- 向量 MVP 存 `LONGBLOB`（1024 维 float32，约 4KB/条），后续可平移到 pgvector。
+- 向量存 PostgreSQL 的 `vector(1024)` 列（pgvector 扩展，float32），不使用 MySQL `BLOB`，也不在 JVM 内存里做全量余弦。
 
 ---
 
@@ -111,7 +112,7 @@ erDiagram
         bigint article_id FK
         int chunk_no
         text content
-        longblob embedding
+        vector embedding
     }
 
     AGENT_RUN {
@@ -166,11 +167,13 @@ erDiagram
 | 7 | `ticket_attachment` | 工单附件 | 10 万/年 |
 | 8 | `sla_policy` | SLA 策略 | 十级 |
 | 9 | `kb_article` | 知识文章 | 千级 |
-| 10 | `kb_chunk` | 文章分块 + 向量 | 5 万以内 |
+| 10 | `kb_chunk` | 文章分块 + 向量（**PostgreSQL**） | 5 万以内 |
 | 11 | `agent_run` | Agent 运行记录 | 万级 |
 | 12 | `agent_step` | Agent 步骤明细 | 10 万级 |
 | 13 | `llm_call` | 模型调用计量 | 百万级（增长最快） |
 | 14 | `ticket_feedback` | 工单回访 | 万级 |
+
+> 除 `kb_chunk` 外均在 MySQL；`kb_chunk` 与 `kb_article` 分属两库，`article_id` 是跨库逻辑外键，不建物理约束，删除文章时按 `article_id` 清理 PG 分块。
 
 ### 3.2 关系说明
 
@@ -345,19 +348,21 @@ erDiagram
 
 ### 4.10 `kb_chunk` 知识分块
 
+> 本表位于 **PostgreSQL 16**（pgvector 扩展），不在 MySQL；`BIGSERIAL` 主键，时间列用 `TIMESTAMP`。
+
 | 字段 | 类型 | 可空 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
-| `id` | BIGINT | 否 | AUTO_INCREMENT | 主键 |
-| `article_id` | BIGINT | 否 | — | 文章 |
+| `id` | BIGSERIAL | 否 | AUTO_INCREMENT | 主键 |
+| `article_id` | BIGINT | 否 | — | 文章，跨库逻辑外键 `kb_article.id` |
 | `chunk_no` | INT | 否 | — | 块序号（从 1 起） |
 | `heading` | VARCHAR(255) | 是 | NULL | 所属章节 |
 | `content` | TEXT | 否 | — | 块内容 |
 | `token_count` | INT | 否 | 0 | 估算 token |
-| `embedding` | LONGBLOB | 是 | NULL | 1024 维 float32 |
-| `is_active` | TINYINT | 否 | 1 | 是否参与检索 |
-| `created_at` | DATETIME | 否 | CURRENT_TIMESTAMP | 创建时间 |
+| `embedding` | vector(1024) | 是 | NULL | 1024 维 float32，由 pgvector 扩展提供；索引建好前可为空 |
+| `is_active` | SMALLINT | 否 | 1 | 是否参与检索 |
+| `created_at` | TIMESTAMP | 否 | CURRENT_TIMESTAMP | 创建时间 |
 
-> `UNIQUE(article_id, chunk_no)`；`FULLTEXT(heading, content) WITH PARSER ngram`。
+> `UNIQUE(article_id, chunk_no)`；向量召回走 `ivfflat`/`HNSW`（见第 5 节），关键词召回用 `pg_trgm` 的 GIN 索引，不引入中文分词扩展。
 
 ### 4.11 `agent_run` Agent 运行
 
@@ -422,6 +427,8 @@ erDiagram
 
 ## 5. 索引设计
 
+> 未标注的表在 MySQL；标注（PG）的建在 PostgreSQL，依赖 `pgvector`（HNSW）与 `pg_trgm`（GIN）扩展，`CREATE EXTENSION` 需在首次建表前执行。
+
 | 表 | 索引 | 类型 | 用途 |
 | --- | --- | --- | --- |
 | `sys_user` | `uk_username(username)` | 唯一 | 登录 |
@@ -447,9 +454,10 @@ erDiagram
 | `sla_policy` | `uk_priority(priority)` | 唯一 | 优先级唯一 |
 | `kb_article` | `idx_status(status)` | 普通 | 索引状态 |
 | `kb_article` | `idx_category(category)` | 普通 | 分类 |
-| `kb_chunk` | `uk_article_chunk(article_id, chunk_no)` | 唯一 | 块唯一 |
-| `kb_chunk` | `idx_article_active(article_id, is_active)` | 普通 | 有效块 |
-| `kb_chunk` | `ft_content(heading, content)` | FULLTEXT(ngram) | 关键词检索 |
+| `kb_chunk`（PG） | `uk_article_chunk(article_id, chunk_no)` | 唯一 | 块唯一 |
+| `kb_chunk`（PG） | `idx_article_active(article_id, is_active)` | 普通 | 有效块 |
+| `kb_chunk`（PG） | `idx_chunk_embedding(embedding vector_cosine_ops)` | HNSW | 向量召回 TopN；建索引要求 `embedding` 非空 |
+| `kb_chunk`（PG） | `idx_chunk_content(heading, content)` | GIN(`pg_trgm`) | 关键词召回；不依赖中文分词扩展 |
 | `agent_run` | `idx_user_created(user_id, created_at)` | 普通 | 我的运行 |
 | `agent_step` | `idx_run_step(run_id, step_no)` | 普通 | 轨迹 |
 | `llm_call` | `idx_trace(trace_id)` | 普通 | 链路 |
@@ -483,14 +491,15 @@ erDiagram
 | `ticket` | 10 万 | 每单一条 | 按年归档；终态不删 |
 | `ticket_event` | 50 万 | 每单 3-8 条 | 按月分区（后续） |
 | `llm_call` | 100 万+ | 每次模型调用 | 按月归档/汇总；保留 6 个月明细 |
-| `kb_chunk` | 5 万以内 | 知识文章 | 内存余弦可承受；超 10 万切 pgvector |
+| `kb_chunk`（PG） | 5 万以内 | 知识文章 | 向量检索由 pgvector HNSW 承担；超百万再考虑专用向量库 |
 | `agent_step` | 10 万 | 每次 Agent 3-8 步 | 与 run 一起归档 |
 
 **容量判断**：
 
-- 1024 维 float32 = 4KB/条；5 万块 ≈ 200MB，放 MySQL `LONGBLOB` 可接受。
-- 启动加载 5 万 × 1024 float 到内存 ≈ 200MB；如果 JVM 只有 512MB，需分页加载或改 pgvector。
-- 这是 MVP 的已知约束，产品文档已把「升级 pgvector」列为 P2。
+- 1024 维 float32 = 4KB/条；5 万块 ≈ 200MB 向量数据，pgvector 存于 PG 堆表，索引另占约 1.2 倍。
+- 应用侧不再全量加载向量，JVM 内存与知识库规模解耦——这是改用 pgvector 的主要动机。
+- HNSW 索引构建吃内存与时间，5 万块量级在单机 PG 上可在秒级到分钟级完成；重建索引期间用 `is_active` 控制可检索范围。
+- 早期（< 1 万块）可先 `ivfflat` + 少量 `lists`，数据量上来再换 HNSW，两者索引不能共存于同一列，切换需重建。
 
 ---
 
@@ -504,6 +513,7 @@ erDiagram
 | DTO | `dto/request`、`dto/response` | `TicketCreateRequest`、`TicketVO` |
 | 枚举 | `enums` 包，字符串值 | `TicketStatus.NEW` |
 | 表前缀 | 无统一前缀；系统表 `sys_`，知识库 `kb_` | — |
+| 数据源 | MySQL 承载 13 张表；`kb_chunk` 在 PostgreSQL，其 Mapper 必须显式绑定 PG 会话，不得与 MySQL Mapper 混用 | `KbChunkMapper`（PG） |
 
 ---
 
