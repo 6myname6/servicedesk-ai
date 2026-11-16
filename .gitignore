@@ -131,3 +131,5 @@ $RECYCLE.BIN/
 /docs/编码规范.md
 backend/src/main/resources/docs/开发排期.md
 backend/src/main/resources/docs/编码规范.md
+backend/src/test/java/com/servicedesk/acceptance/W1AcceptanceTest.java
+AGENTS.md
