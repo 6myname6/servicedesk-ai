@@ -3,18 +3,6 @@
 > 企业售后 / 设备报修工单系统 + AI 坐席
 > 让报修、派单、处理、知识沉淀、SLA 考核跑在一条线上，AI 只做增强，不替代人。
 
-## 当前阶段
-
-**文档阶段**：产品文档、ER 图、接口文档已完成，代码尚未开始。先本地开发，部署方案后续单独设计。
-
-## 文档索引
-
-| 文档 | 内容 |
-| --- | --- |
-| [产品文档](docs/产品文档.md) | 背景、角色权限、31 条功能需求、页面交互、状态机与 SLA、非功能需求、验收 |
-| [ER 图](docs/ER图.md) | 14 张表的 Mermaid ER 图、字段字典、索引、枚举 |
-| [接口文档](docs/接口文档.md) | 通用约定、9 个模块 51 个接口、请求/响应样例、附录数据结构 |
-
 ## 产品定位
 
 - **业务**：中小企业设备售后、物业报修、IT 运维
@@ -22,24 +10,33 @@
 - **闭环**：报修 → AI 分类定级 → 派单 → 接单 → 处理（知识推荐）→ 解决 → 回访
 - **AI**：结构化建单、RAG 知识推荐、Agent 工具调用、NL2SQL 报表、工单摘要/质检
 - **差异化**：AI 嵌进工单生命周期；写操作必须人工确认；权限在查询层；NL2SQL 只读 + AST 校验
+## 文档索引
 
-## 技术栈（计划）
+| 文档 | 内容 |
+| --- | --- |
+| [产品文档](backend/src/main/resources/docs/产品文档.md) | 背景、角色权限、31 条功能需求、页面交互、状态机与 SLA、非功能需求、验收 |
+| [ER 图](backend/src/main/resources/docs/ER图.md) | 14 张表的 Mermaid ER 图、字段字典、索引、枚举 |
+| [接口文档](backend/src/main/resources/docs/接口文档.md) | 通用约定、9 个模块 51 个接口、请求/响应样例、附录数据结构 |
+
+
+## 技术栈
 
 | 层 | 选型 |
 | --- | --- |
 | 后端 | Spring Boot 3.5.16 + MyBatis-Plus + MySQL 8 + Redis 7 + LangChain4j |
+| 数据 | MySQL 8（业务 13 张表）+ PostgreSQL 16（`kb_chunk` 向量表） |
 | 前端 | Vue 3 + Vite + Pinia + Element Plus + ECharts |
 | 鉴权 | JWT + 拦截器 + ThreadLocal 用户上下文 |
-| 向量 | MVP：MySQL BLOB + 内存余弦；升级：pgvector |
+| 向量 | PostgreSQL 16 + pgvector（`vector(1024)`，HNSW 召回） |
 | 本地存储 | `./storage`（附件），后续可替换 OSS |
-| 部署 | Docker Compose（后续） |
+| 部署 | Docker Compose |
 
 ## 命名约定
 
 - 产品名：智维工单（ServiceDesk AI）
 - 仓库/目录：`servicedesk-ai`
 - Java 包名：`com.servicedesk`
-- 数据库：`servicedesk`
+- 数据库：MySQL `servicedesk_ai`、PostgreSQL `servicedesk_kb`（向量）
 - API 基址：`/api`
 
 ## 文档维护规则
