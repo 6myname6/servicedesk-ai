@@ -181,7 +181,7 @@ erDiagram
 | 用户 → 工单（报修） | 1:N | `ticket.reporter_id` | 报修人 |
 | 用户 → 工单（处理） | 1:N | `ticket.assignee_id` | 当前处理工程师 |
 | 客户 → 设备 | 1:N | `device.customer_id` | 一个客户多台设备 |
-| 客户 → 工单 | 1:1 | `ticket.customer_id` | 一个客户多张工单 |
+| 客户 → 工单 | 1:N | `ticket.customer_id` | 一个客户多张工单 |
 | 设备 → 工单 | 1:N | `ticket.device_id` | 一台设备多张工单（可空） |
 | SLA 策略 → 工单 | 1:N | `ticket.sla_policy_id` | 建单时按优先级匹配 |
 | 工单 → 事件 | 1:N | `ticket_event.ticket_id` | 时间线，追加写 |

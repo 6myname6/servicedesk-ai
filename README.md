@@ -27,7 +27,7 @@
 
 | 层 | 选型 |
 | --- | --- |
-| 后端 | Spring Boot 3.2.5 + MyBatis-Plus + MySQL 8 + Redis 7 + LangChain4j |
+| 后端 | Spring Boot 3.5.16 + MyBatis-Plus + MySQL 8 + Redis 7 + LangChain4j |
 | 前端 | Vue 3 + Vite + Pinia + Element Plus + ECharts |
 | 鉴权 | JWT + 拦截器 + ThreadLocal 用户上下文 |
 | 向量 | MVP：MySQL BLOB + 内存余弦；升级：pgvector |
