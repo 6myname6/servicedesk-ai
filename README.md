@@ -31,6 +31,22 @@
 | 对象存储 | 阿里云 OSS（附件 / 知识库文档；`FileStorageService` 接口可替换 MinIO/S3） |
 | 部署 | Docker Compose |
 
+## 本地启动
+
+```bash
+# 后端：8080，context-path /api
+cd backend && mvn spring-boot:run
+
+# 前端开发模式：5173，/api 由 Vite 代理到 8080
+cd frontend && npm install && npm run dev
+
+# 或走 nginx（80）：构建 + 发布 + 启动，配置与脚本在 deploy/
+powershell -ExecutionPolicy Bypass -File deploy\deploy-frontend.ps1
+powershell -ExecutionPolicy Bypass -File deploy\start-nginx.ps1
+```
+
+演示账号见 `backend/sql/seed/seed_demo_data.sql`（统一口令 `Sd123456`）；前端页面与后端进度的对照见 [frontend/README.md](frontend/README.md)。
+
 ## 命名约定
 
 - 产品名：智维工单（ServiceDesk AI）

@@ -133,3 +133,9 @@ backend/src/main/resources/docs/开发排期.md
 backend/src/main/resources/docs/编码规范.md
 backend/src/test/java/com/servicedesk/acceptance/W1AcceptanceTest.java
 AGENTS.md
+
+# -------------------------------------------------------------
+# 10. 本机 nginx 运行时与部署产物（二进制、日志、前端拷贝都不入库）
+# -------------------------------------------------------------
+/deploy/nginx/
+/deploy/tmp/
