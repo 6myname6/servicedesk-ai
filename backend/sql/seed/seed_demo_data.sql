@@ -5,7 +5,7 @@
 -- 使用前提：V1~V5 已执行（表必须存在）。
 -- 使用范围：**仅本地开发 / 演示库**。脚本先清空再写入，可重复执行；
 --          不要对测试以外有意义数据的库执行。
--- 统一口令：123456（BCrypt 存储，见 sys_user.password_hash）
+-- 统一口令：Sd123456（8 位，满足接口文档 1.1.1 的 8-32 位校验；BCrypt 存储，见 sys_user.password_hash）
 -- 幂等性：先 DELETE 再按固定主键 INSERT，重复执行结果一致。
 -- =============================================================
 
@@ -27,14 +27,14 @@ INSERT INTO `team` (`id`, `name`, `supervisor_id`, `description`) VALUES
 
 -- ---------- 2. 账号：四角色各至少一个，工程师按团队分开便于演示派单 ----------
 INSERT INTO `sys_user` (`id`, `username`, `password_hash`, `display_name`, `role`, `team_id`, `phone`, `email`, `status`) VALUES
-    (1, 'admin',   '$2a$10$Ot8bqRZEJa413tr2rvzDZeIgV2JXKPcRDu7YV1NCNsLRVm2IJamNy', '系统管理员', 'ADMIN',      NULL, '13800000001', 'admin@servicedesk.local', 1),
-    (2, 'sup1',    '$2a$10$Ot8bqRZEJa413tr2rvzDZeIgV2JXKPcRDu7YV1NCNsLRVm2IJamNy', '王主管',     'SUPERVISOR', 1,    '13800000002', 'sup1@servicedesk.local', 1),
-    (3, 'sup2',    '$2a$10$Ot8bqRZEJa413tr2rvzDZeIgV2JXKPcRDu7YV1NCNsLRVm2IJamNy', '李主管',     'SUPERVISOR', 2,    '13800000003', 'sup2@servicedesk.local', 1),
-    (4, 'eng1',    '$2a$10$Ot8bqRZEJa413tr2rvzDZeIgV2JXKPcRDu7YV1NCNsLRVm2IJamNy', '张工',       'ENGINEER',   1,    '13800000004', 'eng1@servicedesk.local', 1),
-    (5, 'eng2',    '$2a$10$Ot8bqRZEJa413tr2rvzDZeIgV2JXKPcRDu7YV1NCNsLRVm2IJamNy', '陈工',       'ENGINEER',   1,    '13800000005', 'eng2@servicedesk.local', 1),
-    (6, 'eng3',    '$2a$10$Ot8bqRZEJa413tr2rvzDZeIgV2JXKPcRDu7YV1NCNsLRVm2IJamNy', '刘工',       'ENGINEER',   2,    '13800000006', 'eng3@servicedesk.local', 1),
-    (7, 'rep1',    '$2a$10$Ot8bqRZEJa413tr2rvzDZeIgV2JXKPcRDu7YV1NCNsLRVm2IJamNy', '赵报修',     'REPORTER',   NULL, '13800000007', 'rep1@servicedesk.local', 1),
-    (8, 'rep2',    '$2a$10$Ot8bqRZEJa413tr2rvzDZeIgV2JXKPcRDu7YV1NCNsLRVm2IJamNy', '孙报修',     'REPORTER',   NULL, '13800000008', 'rep2@servicedesk.local', 1);
+    (1, 'admin',   '$2a$10$lnwgBrad33vH0psAUfxGI.fnzGMgkQ62tzgcONve02QDCsldI2Rui', '系统管理员', 'ADMIN',      NULL, '13800000001', 'admin@servicedesk.local', 1),
+    (2, 'sup1',    '$2a$10$lnwgBrad33vH0psAUfxGI.fnzGMgkQ62tzgcONve02QDCsldI2Rui', '王主管',     'SUPERVISOR', 1,    '13800000002', 'sup1@servicedesk.local', 1),
+    (3, 'sup2',    '$2a$10$lnwgBrad33vH0psAUfxGI.fnzGMgkQ62tzgcONve02QDCsldI2Rui', '李主管',     'SUPERVISOR', 2,    '13800000003', 'sup2@servicedesk.local', 1),
+    (4, 'eng1',    '$2a$10$lnwgBrad33vH0psAUfxGI.fnzGMgkQ62tzgcONve02QDCsldI2Rui', '张工',       'ENGINEER',   1,    '13800000004', 'eng1@servicedesk.local', 1),
+    (5, 'eng2',    '$2a$10$lnwgBrad33vH0psAUfxGI.fnzGMgkQ62tzgcONve02QDCsldI2Rui', '陈工',       'ENGINEER',   1,    '13800000005', 'eng2@servicedesk.local', 1),
+    (6, 'eng3',    '$2a$10$lnwgBrad33vH0psAUfxGI.fnzGMgkQ62tzgcONve02QDCsldI2Rui', '刘工',       'ENGINEER',   2,    '13800000006', 'eng3@servicedesk.local', 1),
+    (7, 'rep1',    '$2a$10$lnwgBrad33vH0psAUfxGI.fnzGMgkQ62tzgcONve02QDCsldI2Rui', '赵报修',     'REPORTER',   NULL, '13800000007', 'rep1@servicedesk.local', 1),
+    (8, 'rep2',    '$2a$10$lnwgBrad33vH0psAUfxGI.fnzGMgkQ62tzgcONve02QDCsldI2Rui', '孙报修',     'REPORTER',   NULL, '13800000008', 'rep2@servicedesk.local', 1);
 
 -- 主管回填：team.supervisor_id 与 sys_user.team_id 互为逻辑引用，必须先有人再有指向
 UPDATE `team` SET `supervisor_id` = 2 WHERE `id` = 1;
