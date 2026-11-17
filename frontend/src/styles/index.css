@@ -1,0 +1,205 @@
+/* 设计令牌：与 design/README.md 的视觉约定一一对应，改色只改这里 */
+:root {
+  --sd-navy: #0e2233;
+  --sd-navy-2: #123049;
+  --sd-navy-active: #173b57;
+  --sd-teal: #14b8a6;
+  --sd-primary: #2f6bff;
+  --sd-primary-soft: #eaf0ff;
+  --sd-green: #059669;
+  --sd-green-soft: #e6f7f0;
+  --sd-orange: #d97706;
+  --sd-orange-soft: #fdf3e3;
+  --sd-red: #dc2626;
+  --sd-red-soft: #fdeaea;
+  --sd-purple: #7c3aed;
+  --sd-purple-soft: #f1ebfe;
+  --sd-bg: #f4f6fa;
+  --sd-card: #ffffff;
+  --sd-line: #e6eaf2;
+  --sd-text: #16202e;
+  --sd-text-secondary: #5b6b82;
+  --sd-text-muted: #8b98ac;
+  --sd-radius: 14px;
+  --sd-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px rgba(16, 24, 40, 0.04);
+  --sd-sidebar-width: 236px;
+  --sd-topbar-height: 64px;
+
+  /* Element Plus 主题对齐设计稿主色 */
+  --el-color-primary: #2f6bff;
+  --el-color-primary-light-3: #6d95ff;
+  --el-color-primary-light-5: #96b3ff;
+  --el-color-primary-light-7: #bfd0ff;
+  --el-color-primary-light-8: #d5e0ff;
+  --el-color-primary-light-9: #eaf0ff;
+  --el-color-primary-dark-2: #2656cc;
+  --el-color-success: #059669;
+  --el-color-warning: #d97706;
+  --el-color-danger: #dc2626;
+  --el-color-info: #5b6b82;
+  --el-border-radius-base: 8px;
+  --el-border-color: #e6eaf2;
+  --el-border-color-light: #eef1f7;
+  --el-text-color-primary: #16202e;
+  --el-text-color-regular: #5b6b82;
+  --el-font-size-base: 13px;
+  --el-font-family: 'Microsoft YaHei', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--sd-bg);
+  color: var(--sd-text);
+  font-family: 'Microsoft YaHei', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--sd-primary);
+  text-decoration: none;
+}
+
+/* 票据号统一等宽字体 */
+.mono {
+  font-family: Consolas, 'Courier New', monospace;
+  letter-spacing: 0.2px;
+}
+
+.text-muted {
+  color: var(--sd-text-muted);
+}
+
+.text-secondary {
+  color: var(--sd-text-secondary);
+}
+
+/* 通用卡片 */
+.sd-card {
+  background: var(--sd-card);
+  border-radius: var(--sd-radius);
+  box-shadow: var(--sd-shadow);
+  padding: 20px 24px;
+}
+
+.sd-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.sd-card__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--sd-text);
+  margin: 0;
+}
+
+.sd-card__tip {
+  font-size: 11px;
+  color: var(--sd-text-muted);
+}
+
+/* 页内栅格：主内容 + 右侧信息栏 */
+.sd-grid-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 1200px) {
+  .sd-grid-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Element Plus 细节对齐设计稿 */
+.el-button {
+  font-weight: 500;
+}
+
+.el-table {
+  --el-table-border-color: var(--sd-line);
+  --el-table-header-bg-color: #f7f9fc;
+  --el-table-header-text-color: #6b7a90;
+  --el-table-row-hover-bg-color: #f7f9ff;
+  font-size: 13px;
+}
+
+.el-table th.el-table__cell {
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.2px;
+}
+
+.el-table td.el-table__cell,
+.el-table th.el-table__cell {
+  border-bottom: 1px solid #f0f3f8;
+}
+
+.el-table__inner-wrapper::before {
+  display: none;
+}
+
+.el-pagination {
+  --el-pagination-button-bg-color: #f2f5fa;
+}
+
+.el-dialog {
+  border-radius: 14px;
+}
+
+.el-dialog__header {
+  padding: 20px 24px 8px;
+}
+
+.el-dialog__body {
+  padding: 8px 24px 4px;
+}
+
+.el-dialog__footer {
+  padding: 12px 24px 20px;
+}
+
+.el-form-item__label {
+  font-size: 13px;
+  color: var(--sd-text-secondary);
+}
+
+.el-tabs__item {
+  font-size: 14px;
+}
+
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
+  box-shadow: 0 0 0 1px var(--sd-line) inset;
+}
+
+/* 内页滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cdd6e4;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
