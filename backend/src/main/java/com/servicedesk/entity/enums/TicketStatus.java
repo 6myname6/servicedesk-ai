@@ -1,5 +1,9 @@
 package com.servicedesk.entity.enums;
 
+import com.servicedesk.common.exception.BusinessException;
+
+import java.util.Locale;
+
 /**
  * 工单状态（9 种）。
  *
@@ -32,5 +36,30 @@ public enum TicketStatus {
     /** 已重开：验收不通过或问题复现，重新进入处理。 */
     REOPENED,
     /** 已取消：报修人撤回或无效工单，终态。 */
-    CANCELLED
+    CANCELLED;
+
+    /**
+     * 严格解析状态，用于列表筛选。
+     *
+     * <p>
+     * 与建单不同，筛选没有「缺省值」语义：传了就必须是合法状态，
+     * 否则返回 400，避免把拼错的状态解释成「全部」。
+     * </p>
+     *
+     * @param raw 请求参数
+     * @return 状态枚举
+     * @throws BusinessException 取值不在字典内时抛出 400
+     */
+    public static TicketStatus from(String raw) {
+        if (raw == null || raw.isBlank()) {
+            throw new BusinessException(400, "工单状态不能为空");
+        }
+        String normalized = raw.trim().toUpperCase(Locale.ROOT);
+        for (TicketStatus status : values()) {
+            if (status.name().equals(normalized)) {
+                return status;
+            }
+        }
+        throw new BusinessException(400, "工单状态不合法: " + raw);
+    }
 }

@@ -1,12 +1,16 @@
 package com.servicedesk.controller;
 
+import com.servicedesk.common.api.PageResult;
 import com.servicedesk.common.api.Result;
 import com.servicedesk.dto.request.ticket.TicketCreateRequest;
+import com.servicedesk.dto.request.ticket.TicketQueryRequest;
 import com.servicedesk.service.TicketService;
 import com.servicedesk.vo.TicketDetailVO;
+import com.servicedesk.vo.TicketListItemVO;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -47,5 +51,19 @@ public class TicketController {
         request.getCustomerId(), request.getDeviceId(), request.getCategory(), request.getUrgency(),
         request.getImageUrls() == null ? 0 : request.getImageUrls().size());
     return Result.success(ticketService.create(request));
+  }
+
+  /**
+   * 分页查询工单，自动应用当前用户的数据范围。
+   *
+   * @param query 查询条件，含关键词、状态、紧急度、分类、工程师、团队、我相关与分页
+   * @return 分页结果，按创建时间倒序
+   */
+  @GetMapping
+  public Result<PageResult<TicketListItemVO>> page(@Valid TicketQueryRequest query) {
+    log.debug("收到工单列表请求, status={}, urgency={}, category={}, assigneeId={}, teamId={}, mine={}, page={}, size={}",
+        query.getStatus(), query.getUrgency(), query.getCategory(), query.getAssigneeId(),
+        query.getTeamId(), query.getMine(), query.getPage(), query.getSize());
+    return Result.success(ticketService.page(query));
   }
 }

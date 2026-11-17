@@ -1,8 +1,11 @@
 package com.servicedesk.service;
 
+import com.servicedesk.common.api.PageResult;
 import com.servicedesk.common.exception.BusinessException;
 import com.servicedesk.dto.request.ticket.TicketCreateRequest;
+import com.servicedesk.dto.request.ticket.TicketQueryRequest;
 import com.servicedesk.vo.TicketDetailVO;
+import com.servicedesk.vo.TicketListItemVO;
 
 /**
  * 工单服务，对应接口文档第 2 章。
@@ -33,4 +36,18 @@ public interface TicketService {
    *                           附件不可用抛 400；SLA 策略未配置或工单号冲突抛 503
    */
   TicketDetailVO create(TicketCreateRequest request);
+
+  /**
+   * 分页查询工单，自动应用当前用户的数据范围。
+   *
+   * <p>
+   * 事务边界：只读，不加事务。数据范围先下推为 SQL 条件再分页，保证
+   * {@code total} 只统计可见行；名称字段按当前页批量回填。
+   * </p>
+   *
+   * @param query 查询条件，关键字匹配标题或工单号
+   * @return 分页结果，按创建时间倒序
+   * @throws BusinessException 状态/紧急度/分类取值非法时抛出 400
+   */
+  PageResult<TicketListItemVO> page(TicketQueryRequest query);
 }

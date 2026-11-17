@@ -40,8 +40,19 @@ public enum TicketCategory {
      * @throws BusinessException 取值不在字典内时抛出 400
      */
     public static TicketCategory fromOrDefault(String raw) {
+        return raw == null || raw.isBlank() ? OTHER : from(raw);
+    }
+
+    /**
+     * 严格解析分类，用于列表筛选。
+     *
+     * @param raw 请求参数
+     * @return 分类枚举
+     * @throws BusinessException 取值为空或不在字典内时抛出 400
+     */
+    public static TicketCategory from(String raw) {
         if (raw == null || raw.isBlank()) {
-            return OTHER;
+            throw new BusinessException(400, "故障分类不能为空");
         }
         String normalized = raw.trim().toUpperCase(Locale.ROOT);
         for (TicketCategory category : values()) {

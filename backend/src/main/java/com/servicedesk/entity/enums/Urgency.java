@@ -31,8 +31,19 @@ public enum Urgency {
      * @throws BusinessException 取值不在字典内时抛出 400
      */
     public static Urgency fromOrDefault(String raw) {
+        return raw == null || raw.isBlank() ? P2 : from(raw);
+    }
+
+    /**
+     * 严格解析紧急度，用于列表筛选。
+     *
+     * @param raw 请求参数
+     * @return 紧急度枚举
+     * @throws BusinessException 取值为空或不在字典内时抛出 400
+     */
+    public static Urgency from(String raw) {
         if (raw == null || raw.isBlank()) {
-            return P2;
+            throw new BusinessException(400, "紧急度不能为空");
         }
         String normalized = raw.trim().toUpperCase(Locale.ROOT);
         for (Urgency urgency : values()) {

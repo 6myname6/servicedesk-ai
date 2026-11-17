@@ -46,6 +46,30 @@ public sealed interface TicketScope {
      */
     boolean allows(Long reporterId, Long assigneeId, Long teamId);
 
+    /**
+     * 把数据范围翻译成可下推到数据库的查询条件描述。
+     *
+     * <p>
+     * 列表接口必须把范围下推到 SQL，否则分页的 {@code total} 会把不可见行算进去。
+     * 领域层只返回「按什么字段过滤」这一事实，不依赖 MyBatis，翻译成 SQL 由 Service 完成。
+     * </p>
+     *
+     * @return 查询条件描述，不会返回 null
+     */
+    Visibility visibility();
+
+    /**
+     * 数据范围的查询条件描述，字段互斥：最多只有一项生效。
+     *
+     * @param unrestricted true 表示管理员不加行级条件
+     * @param reporterId   按报修人过滤的条件，其余条件生效时为 null
+     * @param assigneeId   按处理人过滤的条件，其余条件生效时为 null
+     * @param teamIds      按归属团队过滤的集合；非管理员且前两项为 null 时生效，
+     *                     空集合表示「什么都不看到」，不能退化成不过滤
+     */
+    record Visibility(boolean unrestricted, Long reporterId, Long assigneeId, Set<Long> teamIds) {
+    }
+
     /** 管理员：不加任何条件，可见全部工单。 */
     record All() implements TicketScope {
 
@@ -61,6 +85,16 @@ public sealed interface TicketScope {
         public boolean allows(Long reporterId, Long assigneeId, Long teamId) {
             // 直接无条件查看
             return true;
+        }
+
+        /**
+         * 管理员不产生任何 where 条件。
+         *
+         * @return unrestricted=true 的可见性描述
+         */
+        @Override
+        public Visibility visibility() {
+            return new Visibility(true, null, null, Set.of());
         }
     }
 
@@ -82,6 +116,16 @@ public sealed interface TicketScope {
         @Override
         public boolean allows(Long reporterId, Long assigneeId, Long teamId) {
             return Objects.equals(userId, reporterId);
+        }
+
+        /**
+         * 只按报修人下推条件。
+         *
+         * @return reporterId 为当前用户的可见性描述
+         */
+        @Override
+        public Visibility visibility() {
+            return new Visibility(false, userId, null, Set.of());
         }
     }
 
@@ -109,6 +153,16 @@ public sealed interface TicketScope {
         public boolean allows(Long reporterId, Long assigneeId, Long teamId) {
             return Objects.equals(userId, assigneeId);
         }
+
+        /**
+         * 只按处理人下推条件，刻意不加团队条件。
+         *
+         * @return assigneeId 为当前用户的可见性描述
+         */
+        @Override
+        public Visibility visibility() {
+            return new Visibility(false, null, userId, Set.of());
+        }
     }
 
     /**
@@ -134,6 +188,16 @@ public sealed interface TicketScope {
         @Override
         public boolean allows(Long reporterId, Long assigneeId, Long teamId) {
             return teamId != null && teamIds.contains(teamId);
+        }
+
+        /**
+         * 按归属团队下推条件；团队集合为空时由持久化层翻译成「恒假」。
+         *
+         * @return teamIds 为管理团队集合的可见性描述
+         */
+        @Override
+        public Visibility visibility() {
+            return new Visibility(false, null, null, teamIds);
         }
     }
 

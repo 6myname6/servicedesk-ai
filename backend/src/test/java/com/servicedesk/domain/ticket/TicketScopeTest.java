@@ -263,4 +263,41 @@ class TicketScopeTest {
     assertThat(candidateUserId).isNotSameAs(storedUserId);
     assertThat(scope.allows(candidateUserId, null, null)).isTrue();
   }
+
+  /**
+   * 列表过滤用的可见性描述必须与 {@code allows} 同一口径，且字段互斥。
+   */
+  @Test
+  @DisplayName("可见性：四角色下推条件与判定口径一致")
+  void shouldExposeVisibilityForEachRole() {
+    TicketScope.Visibility adminView = TicketScope.of(Role.ADMIN, null, null).visibility();
+    assertThat(adminView.unrestricted()).isTrue();
+
+    TicketScope.Visibility reporterView = TicketScope.of(Role.REPORTER, USER_ID, List.of()).visibility();
+    assertThat(reporterView.unrestricted()).isFalse();
+    assertThat(reporterView.reporterId()).isEqualTo(USER_ID);
+    assertThat(reporterView.assigneeId()).isNull();
+
+    TicketScope.Visibility engineerView = TicketScope.of(Role.ENGINEER, USER_ID, List.of()).visibility();
+    assertThat(engineerView.assigneeId()).isEqualTo(USER_ID);
+    assertThat(engineerView.reporterId()).isNull();
+
+    TicketScope.Visibility supervisorView = TicketScope.of(Role.SUPERVISOR, USER_ID, List.of(TEAM_ID))
+        .visibility();
+    assertThat(supervisorView.reporterId()).isNull();
+    assertThat(supervisorView.assigneeId()).isNull();
+    assertThat(supervisorView.teamIds()).containsExactly(TEAM_ID);
+  }
+
+  /**
+   * 主管没有团队时可见性描述是空集合，持久化层据此拼恒假条件；不能退化成「不过滤」。
+   */
+  @Test
+  @DisplayName("可见性：主管空团队集合保持空集合")
+  void shouldExposeEmptyTeamVisibility() {
+    TicketScope.Visibility view = TicketScope.of(Role.SUPERVISOR, USER_ID, List.of()).visibility();
+
+    assertThat(view.unrestricted()).isFalse();
+    assertThat(view.teamIds()).isEmpty();
+  }
 }
