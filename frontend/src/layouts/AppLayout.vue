@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 
+import AgentDrawer from '@/components/AgentDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
 
 /** 左侧导航项，roles 为空表示所有角色可见。 */
@@ -173,6 +174,9 @@ async function handleLogout() {
         <router-view />
       </main>
     </div>
+
+    <!-- 全局 AI 坐席入口（C-01） -->
+    <AgentDrawer />
   </div>
 </template>
 

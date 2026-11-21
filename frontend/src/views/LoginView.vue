@@ -25,7 +25,8 @@ const loading = ref(false)
 const errorMessage = ref('')
 
 const form = reactive({
-  username: '',
+  // 注册页跳回时会带上 username，直接回填省去重复输入
+  username: typeof route.query.username === 'string' ? route.query.username : '',
   password: ''
 })
 
@@ -195,6 +196,11 @@ function fillDemo(username) {
             </button>
           </div>
         </div>
+
+        <p class="login__register">
+          还没有账号？
+          <router-link to="/register">立即注册</router-link>
+        </p>
       </div>
     </section>
   </div>
@@ -442,6 +448,13 @@ function fillDemo(username) {
 .login__demo-item em {
   font-style: normal;
   font-size: 10px;
+  color: var(--sd-text-muted);
+}
+
+.login__register {
+  margin: 16px 0 0;
+  text-align: center;
+  font-size: 12px;
   color: var(--sd-text-muted);
 }
 

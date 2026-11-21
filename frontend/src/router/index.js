@@ -17,6 +17,12 @@ const routes = [
     meta: { title: '登录', public: true }
   },
   {
+    path: '/register',
+    name: 'register',
+    component: () => import('@/views/RegisterView.vue'),
+    meta: { title: '注册', public: true }
+  },
+  {
     path: '/',
     component: AppLayout,
     redirect: '/dashboard',
@@ -50,6 +56,26 @@ const routes = [
         name: 'kb',
         component: () => import('@/views/KbView.vue'),
         meta: { title: '知识库', roles: ['SUPERVISOR', 'ADMIN'] }
+      },
+      {
+        path: 'kb/new',
+        name: 'kb-create',
+        component: () => import('@/views/KbView.vue'),
+        meta: {
+          title: '新建知识文章',
+          parent: { title: '知识库', path: '/kb' },
+          roles: ['SUPERVISOR', 'ADMIN']
+        }
+      },
+      {
+        path: 'kb/:id',
+        name: 'kb-edit',
+        component: () => import('@/views/KbView.vue'),
+        meta: {
+          title: '编辑知识文章',
+          parent: { title: '知识库', path: '/kb' },
+          roles: ['SUPERVISOR', 'ADMIN']
+        }
       },
       {
         path: 'reports',
@@ -99,7 +125,8 @@ router.beforeEach(async (to) => {
   const auth = useAuthStore()
 
   if (to.meta.public) {
-    return auth.isLoggedIn && to.path === '/login' ? { path: '/dashboard' } : true
+    // 已登录用户访问登录 / 注册页时直接回工作台
+    return auth.isLoggedIn && ['/login', '/register'].includes(to.path) ? { path: '/dashboard' } : true
   }
 
   if (!auth.isLoggedIn) {
