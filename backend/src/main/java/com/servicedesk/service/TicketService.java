@@ -2,13 +2,14 @@ package com.servicedesk.service;
 
 import com.servicedesk.common.api.PageResult;
 import com.servicedesk.common.exception.BusinessException;
+import com.servicedesk.dto.request.ticket.TicketCancelRequest;
 import com.servicedesk.dto.request.ticket.TicketCreateRequest;
+import com.servicedesk.dto.request.ticket.TicketFeedbackRequest;
 import com.servicedesk.dto.request.ticket.TicketQueryRequest;
 import com.servicedesk.dto.request.ticket.TicketUpdateRequest;
 import com.servicedesk.vo.TicketDetailVO;
+import com.servicedesk.vo.TicketFeedbackVO;
 import com.servicedesk.vo.TicketListItemVO;
-
-import jakarta.validation.Valid;
 
 /**
  * 工单服务，对应接口文档第 2 章。
@@ -86,4 +87,36 @@ public interface TicketService {
    *                           取值非法或设备不属于该客户抛 400；新紧急度无启用策略抛 503
    */
   TicketDetailVO update(Long id, TicketUpdateRequest request);
+
+  /**
+   * 取消工单（T-05）。
+   *
+   * <p>
+   * 事务边界：状态更新与 {@code ticket_event} 写入在同一事务内，任一步失败整体回滚，
+   * 不能出现「状态已取消但没有时间线记录」。
+   * 幂等性：不幂等，重复取消第二次命中「状态不可取消」返回 409。
+   * </p>
+   *
+   * @param id      工单 ID
+   * @param request 取消入参，原因必填，版本号必填
+   * @return 取消后的工单详情，{@code status=CANCELLED}
+   * @throws BusinessException 越权或不存在抛 404；状态不可取消或版本冲突抛 409；
+   *                           原因为空抛 400
+   */
+  TicketDetailVO cancel(Long id, TicketCancelRequest request);
+
+  /**
+   * 评价已关闭的工单（T-06）。
+   *
+   * <p>
+   * 事务边界：单表插入；一单一评由唯一索引兜底，并发重复提交同样转 409。
+   * 幂等性：重复提交返回 409，不覆盖上一次评价。
+   * </p>
+   *
+   * @param id      工单 ID
+   * @param request 评价入参，评分 1-5，评价内容可选
+   * @return 新建的评价
+   * @throws BusinessException 非本人或不存在抛 404；未关闭或重复评价抛 409；评分越界抛 400
+   */
+  TicketFeedbackVO feedback(Long id, TicketFeedbackRequest request);
 }

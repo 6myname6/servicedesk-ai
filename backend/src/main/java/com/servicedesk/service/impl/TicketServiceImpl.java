@@ -9,7 +9,9 @@ import com.servicedesk.common.context.LoginUser;
 import com.servicedesk.common.context.UserContext;
 import com.servicedesk.common.exception.BusinessException;
 import com.servicedesk.domain.ticket.TicketScope;
+import com.servicedesk.dto.request.ticket.TicketCancelRequest;
 import com.servicedesk.dto.request.ticket.TicketCreateRequest;
+import com.servicedesk.dto.request.ticket.TicketFeedbackRequest;
 import com.servicedesk.dto.request.ticket.TicketQueryRequest;
 import com.servicedesk.dto.request.ticket.TicketUpdateRequest;
 import com.servicedesk.entity.Customer;
@@ -17,12 +19,17 @@ import com.servicedesk.entity.Device;
 import com.servicedesk.entity.SlaPolicy;
 import com.servicedesk.entity.Ticket;
 import com.servicedesk.entity.TicketAttachment;
+import com.servicedesk.entity.TicketEvent;
+import com.servicedesk.entity.TicketFeedback;
 import com.servicedesk.entity.enums.TicketCategory;
+import com.servicedesk.entity.enums.TicketEventType;
 import com.servicedesk.entity.enums.TicketStatus;
 import com.servicedesk.entity.enums.Urgency;
 import com.servicedesk.mapper.CustomerMapper;
 import com.servicedesk.mapper.DeviceMapper;
 import com.servicedesk.mapper.SlaPolicyMapper;
+import com.servicedesk.mapper.TicketEventMapper;
+import com.servicedesk.mapper.TicketFeedbackMapper;
 import com.servicedesk.mapper.TicketMapper;
 import com.servicedesk.service.TicketService;
 import com.servicedesk.service.support.TicketAccessGuard;
@@ -31,6 +38,7 @@ import com.servicedesk.service.support.TicketAttachmentLinker;
 import com.servicedesk.service.support.TicketNoGenerator;
 import com.servicedesk.service.support.TicketScopeResolver;
 import com.servicedesk.vo.TicketDetailVO;
+import com.servicedesk.vo.TicketFeedbackVO;
 import com.servicedesk.vo.TicketListItemVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -45,7 +53,7 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * 工单服务实现（建单 T-01、列表 T-02、详情 T-03、编辑 T-04）。
+ * 工单服务实现（建单 T-01、列表 T-02、详情 T-03、编辑 T-04、取消 T-05、评价 T-06）。
  *
  * <p>
  * 属于业务实现层。建单主链路：
@@ -63,7 +71,8 @@ import java.util.Objects;
  * </p>
  *
  * <p>
- * 详情与编辑共用 {@link TicketAssembler#assembleDetail(Ticket, LocalDateTime)}：建单、详情、编辑
+ * 详情与编辑共用
+ * {@link TicketAssembler#assembleDetail(Ticket, LocalDateTime)}：建单、详情、编辑
  * 三个出口返回同一个 A.8 结构，任何一处新增字段都只改装配器。读路径的时间基准统一由调用方传入，
  * 暂停中改用 {@code paused_at}，保证列表与详情的倒计时口径一致。
  * </p>
@@ -100,6 +109,12 @@ public class TicketServiceImpl implements TicketService {
 
     /** SLA 策略 Mapper，仅用于按紧急度匹配启用策略。 */
     private final SlaPolicyMapper slaPolicyMapper;
+
+    /** 工单事件 Mapper，取消等状态迁移追加时间线，只写不改。 */
+    private final TicketEventMapper ticketEventMapper;
+
+    /** 工单回访 Mapper，一单一评，唯一索引兜底并发。 */
+    private final TicketFeedbackMapper ticketFeedbackMapper;
 
     /** 数据范围解析器，把登录身份翻译成工单可见范围。 */
     private final TicketScopeResolver ticketScopeResolver;
@@ -241,6 +256,170 @@ public class TicketServiceImpl implements TicketService {
         log.info("编辑工单成功, ticketId={}, operatorId={}, urgencyChanged={}, version={}",
                 id, operator.id(), changes.urgencyChanged(), ticket.getVersion());
         return ticketAssembler.assembleDetail(ticketMapper.selectById(id), now);
+    }
+
+    /**
+     * 取消工单。
+     *
+     * <p>
+     * 顺序固定：可见性 404 → 版本 409 → 状态 409。状态更新与时间线写入同事务，
+     * 事件内容固定为请求里的原因，时间线因此能回答「谁、什么时候、为什么取消」。
+     * </p>
+     *
+     * @param id      工单 ID
+     * @param request 取消入参
+     * @return 取消后的工单详情
+     * @throws BusinessException 不存在或越权抛 404；版本冲突或状态不可取消抛 409
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketDetailVO cancel(Long id, TicketCancelRequest request) {
+        LoginUser operator = UserContext.getRequired();
+        TicketScope scope = ticketScopeResolver.resolve(operator);
+        Ticket ticket =         ticketAccessGuard.requireVisible(id, scope, operator);
+        ticketAccessGuard.assertVersionMatches(ticket, request.getVersion(), operator);
+
+        TicketStatus status = TicketStatus.from(ticket.getStatus());
+        // RESOLVED 不是终态却不可取消（只能验收或重开），所以不能只判 CLOSED / CANCELLED
+        if (status == TicketStatus.RESOLVED
+                || status == TicketStatus.CLOSED
+                || status == TicketStatus.CANCELLED) {
+            log.warn("取消被拒绝：当前状态不可取消, ticketId={}, status={}, operatorId={}",
+                    id, status, operator.id());
+            throw new BusinessException(409, "当前状态 " + status.name() + " 不可取消");
+        }
+
+        String reason = request.getReason().trim();
+        String fromStatus = ticket.getStatus();
+        LocalDateTime now = LocalDateTime.now(clock).withNano(0);
+
+        boolean wasPaused = ticket.getPausedAt() != null;
+        ticket.setStatus(TicketStatus.CANCELLED.name());
+        // 取消是终态，暂停随之失效：不清空会让详情显示「暂停中」却永远不会恢复
+        ticket.setPausedAt(null);
+        if (ticketMapper.updateById(ticket) == 0) {
+            log.warn("取消工单版本冲突, ticketId={}, operatorId={}, requestVersion={}",
+                    id, operator.id(), request.getVersion());
+            throw new BusinessException(409, TicketAccessGuard.MSG_VERSION_CONFLICT);
+        }
+        if (wasPaused) {
+            // updateById 会跳过 null 字段，暂停标记必须显式 set 才能落库（编码规范 4.2）
+            ticketMapper.update(null, Wrappers.<Ticket>lambdaUpdate()
+                    .eq(Ticket::getId, id)
+                    .set(Ticket::getPausedAt, null));
+        }
+        ticketEventMapper.insert(buildCancelEvent(ticket.getId(), fromStatus, reason, operator.id(), now));
+
+        // 只记录原因长度：取消原因是用户自由输入，原文进日志既冗长也可能带敏感信息
+        log.info("取消工单成功, ticketId={}, operatorId={}, fromStatus={}, reasonLength={}",
+                id, operator.id(), fromStatus, reason.length());
+        return ticketAssembler.assembleDetail(ticketMapper.selectById(id), now);
+    }
+
+    /**
+     * 评价已关闭的工单。
+     *
+     * <p>
+     * 先查重复再插入，是为了给正常请求一个明确的 409；并发下的最终保证是
+     * {@code ticket_feedback.uk_ticket} 唯一索引，撞键同样转 409。
+     * </p>
+     *
+     * @param id      工单 ID
+     * @param request 评价入参
+     * @return 新建的评价
+     * @throws BusinessException 不存在或越权抛 404；未关闭或重复评价抛 409
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketFeedbackVO feedback(Long id, TicketFeedbackRequest request) {
+        LoginUser operator = UserContext.getRequired();
+        TicketScope scope = ticketScopeResolver.resolve(operator);
+        Ticket ticket = ticketAccessGuard.requireVisible(id, scope, operator);
+        assertFeedbackAllowed(ticket, operator);
+
+        if (ticketFeedbackMapper.exists(Wrappers.<TicketFeedback>lambdaQuery()
+                .eq(TicketFeedback::getTicketId, id))) {
+            log.warn("评价被拒绝：该工单已评价, ticketId={}, operatorId={}", id, operator.id());
+            throw new BusinessException(409, "该工单已评价");
+        }
+
+        LocalDateTime now = LocalDateTime.now(clock).withNano(0);
+        TicketFeedback feedback = new TicketFeedback();
+        feedback.setTicketId(id);
+        feedback.setScore(request.getScore());
+        feedback.setComment(StringUtils.hasText(request.getComment()) ? request.getComment().trim() : null);
+        feedback.setCreatedAt(now);
+        try {
+            ticketFeedbackMapper.insert(feedback);
+        } catch (DuplicateKeyException e) {
+            log.warn("评价并发重复提交, ticketId={}, operatorId={}", id, operator.id());
+            throw new BusinessException(409, "该工单已评价");
+        }
+
+        log.info("工单评价成功, ticketId={}, feedbackId={}, score={}, operatorId={}",
+                id, feedback.getId(), feedback.getScore(), operator.id());
+        return toFeedbackVO(feedback);
+    }
+
+    /**
+     * 校验工单是否允许评价。
+     *
+     * <p>
+     * 只判状态：接口层已用 {@code @RequiredRole(REPORTER)} 排除其它角色，
+     * 而报修人的数据范围只放行本人的工单，非本人在上一步已经 404。
+     * 这里再判一次「是否本人」只会把 404 变成 409。
+     * </p>
+     *
+     * @param ticket   工单实体
+     * @param operator 当前登录用户，仅用于日志
+     * @throws BusinessException 工单未关闭时抛出 409
+     */
+    private void assertFeedbackAllowed(Ticket ticket, LoginUser operator) {
+        TicketStatus status = TicketStatus.from(ticket.getStatus());
+        if (status != TicketStatus.CLOSED) {
+            log.warn("评价被拒绝：工单未关闭, ticketId={}, status={}, operatorId={}",
+                    ticket.getId(), status, operator.id());
+            throw new BusinessException(409, "工单未关闭，不能评价");
+        }
+    }
+
+    /**
+     * 构造取消事件，用于时间线。
+     *
+     * @param ticketId   工单 ID
+     * @param fromStatus 取消前状态
+     * @param reason     取消原因
+     * @param operatorId 操作人 ID
+     * @param now        发生时间
+     * @return 待插入的事件实体
+     */
+    private TicketEvent buildCancelEvent(Long ticketId, String fromStatus, String reason,
+            Long operatorId, LocalDateTime now) {
+        TicketEvent event = new TicketEvent();
+        event.setTicketId(ticketId);
+        event.setType(TicketEventType.CANCEL.name());
+        event.setFromStatus(fromStatus);
+        event.setToStatus(TicketStatus.CANCELLED.name());
+        event.setOperatorId(operatorId);
+        event.setContent(reason);
+        event.setCreatedAt(now);
+        return event;
+    }
+
+    /**
+     * 评价实体转视图。
+     *
+     * @param feedback 评价实体
+     * @return 评价视图
+     */
+    private TicketFeedbackVO toFeedbackVO(TicketFeedback feedback) {
+        return TicketFeedbackVO.builder()
+                .id(feedback.getId())
+                .ticketId(feedback.getTicketId())
+                .score(feedback.getScore())
+                .comment(feedback.getComment())
+                .createdAt(feedback.getCreatedAt())
+                .build();
     }
 
     /**
