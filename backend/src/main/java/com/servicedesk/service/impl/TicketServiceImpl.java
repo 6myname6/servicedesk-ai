@@ -11,11 +11,10 @@ import com.servicedesk.common.exception.BusinessException;
 import com.servicedesk.domain.ticket.TicketScope;
 import com.servicedesk.dto.request.ticket.TicketCreateRequest;
 import com.servicedesk.dto.request.ticket.TicketQueryRequest;
+import com.servicedesk.dto.request.ticket.TicketUpdateRequest;
 import com.servicedesk.entity.Customer;
 import com.servicedesk.entity.Device;
 import com.servicedesk.entity.SlaPolicy;
-import com.servicedesk.entity.SysUser;
-import com.servicedesk.entity.Team;
 import com.servicedesk.entity.Ticket;
 import com.servicedesk.entity.TicketAttachment;
 import com.servicedesk.entity.enums.TicketCategory;
@@ -24,15 +23,13 @@ import com.servicedesk.entity.enums.Urgency;
 import com.servicedesk.mapper.CustomerMapper;
 import com.servicedesk.mapper.DeviceMapper;
 import com.servicedesk.mapper.SlaPolicyMapper;
-import com.servicedesk.mapper.SysUserMapper;
-import com.servicedesk.mapper.TeamMapper;
-import com.servicedesk.mapper.TicketAttachmentMapper;
 import com.servicedesk.mapper.TicketMapper;
 import com.servicedesk.service.TicketService;
+import com.servicedesk.service.support.TicketAccessGuard;
+import com.servicedesk.service.support.TicketAssembler;
+import com.servicedesk.service.support.TicketAttachmentLinker;
 import com.servicedesk.service.support.TicketNoGenerator;
 import com.servicedesk.service.support.TicketScopeResolver;
-import com.servicedesk.vo.AttachmentVO;
-import com.servicedesk.vo.SlaStatusVO;
 import com.servicedesk.vo.TicketDetailVO;
 import com.servicedesk.vo.TicketListItemVO;
 import lombok.RequiredArgsConstructor;
@@ -40,21 +37,15 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.time.Clock;
-import java.time.Duration;
 import java.time.LocalDateTime;
-import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 
 /**
- * 工单服务实现（建单 T-01 + 列表 T-02）。
+ * 工单服务实现（建单 T-01、列表 T-02、详情 T-03、编辑 T-04）。
  *
  * <p>
  * 属于业务实现层。建单主链路：
@@ -70,47 +61,60 @@ import java.util.stream.Collectors;
  * 关键约束：工单插入与附件回填在同一个事务内，附件回填失败要连工单一起回滚，
  * 不能留下「工单没有图」的半成品；工单号来自 Redis，回滚不会退号，允许跳号。
  * </p>
+ *
+ * <p>
+ * 详情与编辑共用 {@link TicketAssembler#assembleDetail(Ticket, LocalDateTime)}：建单、详情、编辑
+ * 三个出口返回同一个 A.8 结构，任何一处新增字段都只改装配器。读路径的时间基准统一由调用方传入，
+ * 暂停中改用 {@code paused_at}，保证列表与详情的倒计时口径一致。
+ * </p>
+ *
+ * <p>
+ * 错误码分工：不存在与越权统一 404（{@link TicketAccessGuard#requireVisible}），状态不允许与
+ * 版本冲突 409，取值非法 400，策略缺失 503。顺序不能调换，否则会通过 409 暴露工单是否存在。
+ * </p>
+ *
+ * <p>
+ * 本类只保留编排与「单用例专用」逻辑：查询条件拼装、客户/设备/策略校验、建单实体组装、
+ * 重试插号、字段合并。这些方法只被一个用例调用且与编排上下文强耦合，拆成 Bean 只会增加跳转层级。
+ * </p>
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class TicketServiceImpl implements TicketService {
 
-    /** 单次建单最多关联的附件数，与接口文档 2.2 一致。 */
-    private static final int MAX_ATTACHMENTS = 5;
-
     /** 工单号唯一冲突时的最大尝试次数（含首次）。 */
     private static final int MAX_INSERT_ATTEMPTS = 2;
 
-    /** 工单 Mapper。 */
+    /** 工单 Mapper，建单插入、列表分页、编辑更新都用它。 */
     private final TicketMapper ticketMapper;
 
     /** 工单号生成器，Redis 日序列 + 库内兜底。 */
     private final TicketNoGenerator ticketNoGenerator;
 
-    /** 客户 Mapper，用于校验客户存在性并回填客户快照。 */
+    /** 客户 Mapper，仅用于建单前校验客户存在，装配由 {@link TicketAssembler} 负责。 */
     private final CustomerMapper customerMapper;
 
-    /** 设备 Mapper，用于校验设备存在性与归属。 */
+    /** 设备 Mapper，仅用于校验设备存在性与归属。 */
     private final DeviceMapper deviceMapper;
 
-    /** SLA 策略 Mapper，按紧急度匹配启用策略。 */
+    /** SLA 策略 Mapper，仅用于按紧急度匹配启用策略。 */
     private final SlaPolicyMapper slaPolicyMapper;
-
-    /** 附件 Mapper，用于校验并回填 {@code ticket_id}。 */
-    private final TicketAttachmentMapper attachmentMapper;
-
-    /** 用户 Mapper，列表回填处理人显示名。 */
-    private final SysUserMapper sysUserMapper;
-
-    /** 团队 Mapper，列表回填团队名。 */
-    private final TeamMapper teamMapper;
 
     /** 数据范围解析器，把登录身份翻译成工单可见范围。 */
     private final TicketScopeResolver ticketScopeResolver;
 
     /** 业务时钟，建单时刻与剩余分钟都取它，禁止无参 {@code now()}。 */
     private final Clock clock;
+
+    /** 读模型装配器，详情与列表的统一出口。 */
+    private final TicketAssembler ticketAssembler;
+
+    /** 访问守卫，负责 404 / 409 的判定顺序。 */
+    private final TicketAccessGuard ticketAccessGuard;
+
+    /** 附件关联器，负责校验与回填 {@code ticket_id}。 */
+    private final TicketAttachmentLinker ticketAttachmentLinker;
 
     /**
      * 创建工单。
@@ -124,12 +128,13 @@ public class TicketServiceImpl implements TicketService {
     @Transactional(rollbackFor = Exception.class)
     public TicketDetailVO create(TicketCreateRequest request) {
         LoginUser operator = UserContext.getRequired();
-        Customer customer = requireCustomer(request.getCustomerId());
-        Device device = requireDeviceOfCustomer(request.getDeviceId(), customer.getId());
+        Customer customer = requireCustomer(request.getCustomerId(), operator.id());
+        Device device = requireDeviceOfCustomer(request.getDeviceId(), customer.getId(), operator.id());
         TicketCategory category = TicketCategory.fromOrDefault(request.getCategory());
         Urgency urgency = Urgency.fromOrDefault(request.getUrgency());
-        SlaPolicy policy = requirePolicy(urgency);
-        List<TicketAttachment> attachments = resolveAttachments(request.getImageUrls(), operator.id());
+        SlaPolicy policy = requirePolicy(urgency, operator.id());
+        List<TicketAttachment> attachments = ticketAttachmentLinker
+                .resolveAttachments(request.getImageUrls(), operator.id());
 
         // 基准时刻只取一次并截到秒：createdAt 与两个 deadline 必须同源，且与 DATETIME(0) 的落库精度一致，
         // 否则「deadline - createdAt」会少算 1 分钟
@@ -140,14 +145,14 @@ public class TicketServiceImpl implements TicketService {
         Ticket ticket = buildTicket(request, customer, device, category, urgency, policy,
                 operator.id(), now, responseDeadline, resolveDeadline);
         insertWithUniqueTicketNo(ticket);
-        linkAttachments(attachments, ticket.getId());
+        // 回填与插入同事务：附件被并发抢占时抛 409，连工单一起回滚
+        ticketAttachmentLinker.linkAttachments(attachments, ticket.getId(), operator.id());
 
         // 重新查一次拿数据库生成的 version / updated_at，避免响应里出现 null
         Ticket saved = ticketMapper.selectById(ticket.getId());
         log.info("建单成功, ticketId={}, ticketNo={}, category={}, urgency={}, reporterId={}, attachments={}",
                 saved.getId(), saved.getTicketNo(), category, urgency, operator.id(), attachments.size());
-        return toVO(saved, customer, device, operator, policy, attachments,
-            now, responseDeadline, resolveDeadline);
+        return ticketAssembler.assembleDetail(saved, now);
     }
 
     /**
@@ -168,11 +173,74 @@ public class TicketServiceImpl implements TicketService {
         TicketScope scope = ticketScopeResolver.resolve(operator);
         LambdaQueryWrapper<Ticket> wrapper = buildListWrapper(query, scope, operator.id());
         IPage<Ticket> page = ticketMapper.selectPage(
-            new Page<>(query.getPage(), query.getSize()), wrapper);
+                new Page<>(query.getPage(), query.getSize()), wrapper);
 
-        NameIndex names = loadNames(page.getRecords());
+        return ticketAssembler.assemblePage(page, LocalDateTime.now(clock).withNano(0));
+    }
+
+    /**
+     * 查询工单详情。
+     *
+     * <p>
+     * 事务边界：只读，不加事务。数据范围判定与列表共用 {@code TicketScope}，
+     * 越权与不存在统一 404，避免通过响应差异枚举他人工单。
+     * </p>
+     *
+     * @param id 工单 ID
+     * @return 工单详情，含客户/设备、SLA、AI 摘要位与附件
+     * @throws BusinessException 工单不存在或不在当前用户数据范围内时抛出 404
+     */
+    @Override
+    public TicketDetailVO detail(Long id) {
+        LoginUser operator = UserContext.getRequired();
+        TicketScope scope = ticketScopeResolver.resolve(operator);
+        Ticket ticket = ticketAccessGuard.requireVisible(id, scope, operator);
+        return ticketAssembler.assembleDetail(ticket, LocalDateTime.now(clock).withNano(0));
+    }
+
+    /**
+     * 编辑工单的标题、描述、分类、紧急度与设备。
+     *
+     * <p>
+     * 事务边界：主表更新与紧急度触发的 SLA 重算在同一事务内，任一步失败整体回滚。
+     * 幂等性：字段未变化时不写库，{@code version} 与 {@code updated_at} 都不变；
+     * 有变更时以 {@code version} 做乐观锁，重复提交旧版本返回 409。
+     * </p>
+     *
+     * @param id      工单 ID
+     * @param request 编辑入参，五个业务字段均可选，不传表示保留原值
+     * @return 编辑后的工单详情
+     * @throws BusinessException 越权或不存在抛 404；终态、报修人非 NEW、版本冲突抛 409；
+     *                           取值非法或设备不属于该客户抛 400；新紧急度无启用策略抛 503
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketDetailVO update(Long id, TicketUpdateRequest request) {
+        LoginUser operator = UserContext.getRequired();
+        TicketScope scope = ticketScopeResolver.resolve(operator);
+        Ticket ticket = ticketAccessGuard.requireVisible(id, scope, operator);
+        ticketAccessGuard.assertEditable(ticket, operator);
+        ticketAccessGuard.assertVersionMatches(ticket, request.getVersion(), operator);
+
         LocalDateTime now = LocalDateTime.now(clock).withNano(0);
-        return PageResult.from(page, ticket -> toItemVO(ticket, names, now));
+        EditChanges changes = applyChanges(ticket, request, operator.id());
+        if (!changes.dirty()) {
+            // 空更新不写库：既不校验 version，也不刷新 updated_at，保证重放结果一致
+            log.debug("编辑工单无字段变更，直接返回详情, ticketId={}, operatorId={}", id, operator.id());
+            return ticketAssembler.assembleDetail(ticket, now);
+        }
+        if (changes.urgencyChanged()) {
+            SlaPolicy policy = requirePolicy(Urgency.from(ticket.getUrgency()), operator.id());
+            rebaseSla(ticket, policy, now);
+        }
+        if (ticketMapper.updateById(ticket) == 0) {
+            log.warn("编辑工单版本冲突, ticketId={}, operatorId={}, requestVersion={}",
+                    id, operator.id(), request.getVersion());
+            throw new BusinessException(409, TicketAccessGuard.MSG_VERSION_CONFLICT);
+        }
+        log.info("编辑工单成功, ticketId={}, operatorId={}, urgencyChanged={}, version={}",
+                id, operator.id(), changes.urgencyChanged(), ticket.getVersion());
+        return ticketAssembler.assembleDetail(ticketMapper.selectById(id), now);
     }
 
     /**
@@ -193,13 +261,13 @@ public class TicketServiceImpl implements TicketService {
             // 关键字是「或」关系，必须整体括起来，否则会把数据范围条件一起或掉
             wrapper.and(w -> w.like(Ticket::getTitle, keyword).or().like(Ticket::getTicketNo, keyword));
         }
-        if (hasText(query.getStatus())) {
+        if (StringUtils.hasText(query.getStatus())) {
             wrapper.eq(Ticket::getStatus, TicketStatus.from(query.getStatus()).name());
         }
-        if (hasText(query.getUrgency())) {
+        if (StringUtils.hasText(query.getUrgency())) {
             wrapper.eq(Ticket::getUrgency, Urgency.from(query.getUrgency()).name());
         }
-        if (hasText(query.getCategory())) {
+        if (StringUtils.hasText(query.getCategory())) {
             wrapper.eq(Ticket::getCategory, TicketCategory.from(query.getCategory()).name());
         }
         if (query.getAssigneeId() != null) {
@@ -213,7 +281,7 @@ public class TicketServiceImpl implements TicketService {
         }
         if (Boolean.TRUE.equals(query.getEscalated())) {
             wrapper.and(w -> w.isNotNull(Ticket::getResponseEscalatedAt)
-                .or().isNotNull(Ticket::getResolveEscalatedAt));
+                    .or().isNotNull(Ticket::getResolveEscalatedAt));
         }
         // 创建时间可能相同，追加 id 倒序保证分页顺序稳定
         wrapper.orderByDesc(Ticket::getCreatedAt).orderByDesc(Ticket::getId);
@@ -252,96 +320,6 @@ public class TicketServiceImpl implements TicketService {
     }
 
     /**
-     * 按当前页批量加载名称，避免逐行查库。
-     *
-     * @param tickets 当前页工单
-     * @return 四类名称索引
-     */
-    private NameIndex loadNames(List<Ticket> tickets) {
-        if (tickets.isEmpty()) {
-            return new NameIndex(Map.of(), Map.of(), Map.of(), Map.of());
-        }
-        Set<Long> customerIds = collectIds(tickets, Ticket::getCustomerId);
-        Set<Long> deviceIds = collectIds(tickets, Ticket::getDeviceId);
-        Set<Long> assigneeIds = collectIds(tickets, Ticket::getAssigneeId);
-        Set<Long> teamIds = collectIds(tickets, Ticket::getTeamId);
-        return new NameIndex(
-            customerIds.isEmpty() ? Map.of()
-                : toNameMap(customerMapper.selectByIds(customerIds), Customer::getId, Customer::getName),
-            deviceIds.isEmpty() ? Map.of()
-                : toNameMap(deviceMapper.selectByIds(deviceIds), Device::getId, Device::getModel),
-            assigneeIds.isEmpty() ? Map.of()
-                : toNameMap(sysUserMapper.selectByIds(assigneeIds), SysUser::getId, SysUser::getDisplayName),
-            teamIds.isEmpty() ? Map.of()
-                : toNameMap(teamMapper.selectByIds(teamIds), Team::getId, Team::getName));
-    }
-
-    /**
-     * 收集某一列的非空 ID。
-     *
-     * @param tickets 当前页工单
-     * @param getter  取值函数
-     * @return 去重后的 ID 集合
-     */
-    private Set<Long> collectIds(List<Ticket> tickets, Function<Ticket, Long> getter) {
-        return tickets.stream().map(getter).filter(Objects::nonNull).collect(Collectors.toSet());
-    }
-
-    /**
-     * 把实体列表转成 ID → 名称的映射。
-     *
-     * <p>
-     * 不用 {@code Collectors.toMap}：设备型号允许为 null，而 {@code toMap} 遇到 null 值会抛 NPE。
-     * </p>
-     *
-     * @param rows       实体列表
-     * @param idGetter   ID 取值函数
-     * @param nameGetter 名称取值函数
-     * @param <T>        实体类型
-     * @return ID 到名称的映射
-     */
-    private <T> Map<Long, String> toNameMap(List<T> rows, Function<T, Long> idGetter,
-        Function<T, String> nameGetter) {
-        Map<Long, String> result = new HashMap<>();
-        for (T row : rows) {
-            result.put(idGetter.apply(row), nameGetter.apply(row));
-        }
-        return result;
-    }
-
-    /**
-     * 工单实体转列表项视图。
-     *
-     * @param ticket 工单实体
-     * @param names  名称索引
-     * @param now    计算剩余分钟的时刻
-     * @return 列表项视图
-     */
-    private TicketListItemVO toItemVO(Ticket ticket, NameIndex names, LocalDateTime now) {
-        Long remaining = null;
-        boolean breached = false;
-        if (ticket.getResolveDeadline() != null) {
-            remaining = Duration.between(now, ticket.getResolveDeadline()).toMinutes();
-            breached = now.isAfter(ticket.getResolveDeadline());
-        }
-        return TicketListItemVO.builder()
-            .id(ticket.getId())
-            .ticketNo(ticket.getTicketNo())
-            .title(ticket.getTitle())
-            .category(ticket.getCategory())
-            .urgency(ticket.getUrgency())
-            .status(ticket.getStatus())
-            .customerName(names.customers().get(ticket.getCustomerId()))
-            .deviceModel(ticket.getDeviceId() == null ? null : names.devices().get(ticket.getDeviceId()))
-            .assigneeName(ticket.getAssigneeId() == null ? null : names.users().get(ticket.getAssigneeId()))
-            .teamName(ticket.getTeamId() == null ? null : names.teams().get(ticket.getTeamId()))
-            .slaRemainingMinutes(remaining)
-            .slaBreached(breached)
-            .createdAt(ticket.getCreatedAt())
-            .build();
-    }
-
-    /**
      * 去掉首尾空白，空串归一为 null。
      *
      * @param value 原始字符串
@@ -353,28 +331,6 @@ public class TicketServiceImpl implements TicketService {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
-    }
-
-    /**
-     * 判断字符串非空白。
-     *
-     * @param value 待判断字符串
-     * @return true 表示存在非空白内容
-     */
-    private boolean hasText(String value) {
-        return value != null && !value.isBlank();
-    }
-
-    /**
-     * 当前页涉及的四类名称索引。
-     *
-     * @param customers 客户 ID → 客户名
-     * @param devices   设备 ID → 型号
-     * @param users     用户 ID → 显示名
-     * @param teams     团队 ID → 团队名
-     */
-    private record NameIndex(Map<Long, String> customers, Map<Long, String> devices,
-        Map<Long, String> users, Map<Long, String> teams) {
     }
 
     /**
@@ -426,6 +382,9 @@ public class TicketServiceImpl implements TicketService {
      */
     private void insertWithUniqueTicketNo(Ticket ticket) {
         for (int attempt = 1; attempt <= MAX_INSERT_ATTEMPTS; attempt++) {
+            // 上一次 insert 失败时自增主键可能已被回填到实体上；不清空就换号重试会带着旧 id 再插一次，
+            // 报主键冲突而不是工单号冲突，把真实的失败原因掩盖掉
+            ticket.setId(null);
             ticket.setTicketNo(ticketNoGenerator.next());
             try {
                 ticketMapper.insert(ticket);
@@ -441,36 +400,17 @@ public class TicketServiceImpl implements TicketService {
     }
 
     /**
-     * 把附件的 {@code ticket_id} 回填为本工单。
-     *
-     * @param attachments 已通过校验的附件
-     * @param ticketId    新工单 ID
-     */
-    private void linkAttachments(List<TicketAttachment> attachments, Long ticketId) {
-        if (attachments.isEmpty()) {
-            return;
-        }
-        List<Long> attachmentIds = attachments.stream().map(TicketAttachment::getId).toList();
-        attachmentMapper.update(null, Wrappers.<TicketAttachment>lambdaUpdate()
-                .in(TicketAttachment::getId, attachmentIds)
-                .set(TicketAttachment::getTicketId, ticketId));
-        // 同步内存对象，响应里的 attachments 不必再查一次库
-        attachments.forEach(attachment -> attachment.setTicketId(ticketId));
-        log.info("建单关联附件成功, ticketId={}, attachmentIds={}", ticketId, attachmentIds);
-    }
-
-    /**
      * 校验客户存在。
      *
      * @param customerId 客户 ID
+     * @param operatorId 当前用户 ID，仅用于日志
      * @return 客户实体
      * @throws BusinessException 客户不存在时抛出 400
      */
-    private Customer requireCustomer(Long customerId) {
+    private Customer requireCustomer(Long customerId, Long operatorId) {
         Customer customer = customerMapper.selectById(customerId);
         if (customer == null) {
-            log.warn("建单被拒绝：客户不存在, customerId={}, operatorId={}",
-                    customerId, UserContext.getUserId());
+            log.warn("建单被拒绝：客户不存在, customerId={}, operatorId={}", customerId, operatorId);
             throw new BusinessException(400, "客户不存在");
         }
         return customer;
@@ -481,17 +421,18 @@ public class TicketServiceImpl implements TicketService {
      *
      * @param deviceId   设备 ID，可为 null
      * @param customerId 客户 ID
+     * @param operatorId 当前用户 ID，仅用于日志
      * @return 设备实体，deviceId 为 null 时返回 null
      * @throws BusinessException 设备不存在或不属于该客户时抛出 400
      */
-    private Device requireDeviceOfCustomer(Long deviceId, Long customerId) {
+    private Device requireDeviceOfCustomer(Long deviceId, Long customerId, Long operatorId) {
         if (deviceId == null) {
             return null;
         }
         Device device = deviceMapper.selectById(deviceId);
         if (device == null || !Objects.equals(device.getCustomerId(), customerId)) {
-            log.warn("建单被拒绝：设备不存在或不属于该客户, deviceId={}, customerId={}, operatorId={}",
-                    deviceId, customerId, UserContext.getUserId());
+            log.warn("设备校验未通过：不存在或不属于该客户, deviceId={}, customerId={}, operatorId={}",
+                    deviceId, customerId, operatorId);
             throw new BusinessException(400, "设备不存在或不属于该客户");
         }
         return device;
@@ -500,149 +441,119 @@ public class TicketServiceImpl implements TicketService {
     /**
      * 按紧急度匹配启用中的 SLA 策略。
      *
-     * @param urgency 紧急度
+     * @param urgency    紧急度
+     * @param operatorId 当前用户 ID，仅用于日志
      * @return SLA 策略
      * @throws BusinessException 没有启用策略时抛出 503
      */
-    private SlaPolicy requirePolicy(Urgency urgency) {
+    private SlaPolicy requirePolicy(Urgency urgency, Long operatorId) {
         SlaPolicy policy = slaPolicyMapper.selectOne(Wrappers.<SlaPolicy>lambdaQuery()
                 .eq(SlaPolicy::getPriority, urgency.name())
                 .eq(SlaPolicy::getEnabled, 1));
         if (policy == null) {
-            log.error("建单失败：紧急度无启用的 SLA 策略, urgency={}, operatorId={}",
-                    urgency, UserContext.getUserId());
+            log.error("紧急度无启用的 SLA 策略, urgency={}, operatorId={}", urgency, operatorId);
             throw new BusinessException(503, "SLA 策略未配置，请联系管理员");
         }
         return policy;
     }
 
     /**
-     * 校验并加载待关联的附件。
+     * 把请求里的可选字段合并到工单实体上。
      *
      * <p>
-     * 只接受「当前账号上传且尚未关联工单」的附件：否则任何登录用户都能把别人的图
-     * 挂到自己的工单上，或者把一张图同时挂到多张工单上。
+     * 不传或传 null 表示保留原值；传了但与库里相同也不算变更 —— 否则同一个请求重放两次
+     * 会让 version 无谓自增，空更新就不幂等了。取值校验（空白、字典外、设备归属）都在这里完成，
+     * 校验通过才写字段，避免改到一半才发现非法值。
      * </p>
      *
-     * @param imageUrls  请求里的附件 URL，可为 null
-     * @param reporterId 当前用户 ID
-     * @return 命中的附件，按入参顺序去重后的数量与结果一致；无附件时返回空列表
-     * @throws BusinessException URL 不可用或超过 5 个时抛出 400
+     * @param ticket     待编辑工单
+     * @param request    编辑入参
+     * @param operatorId 当前用户 ID，仅用于日志
+     * @return 是否真的发生变更、紧急度是否变更
+     * @throws BusinessException 标题/描述为空白、分类/紧急度不合法、设备不属于该客户时抛出 400
      */
-    private List<TicketAttachment> resolveAttachments(List<String> imageUrls, Long reporterId) {
-        if (imageUrls == null || imageUrls.isEmpty()) {
-            return List.of();
-        }
-        List<String> urls = imageUrls.stream()
-                .filter(Objects::nonNull)
-                .map(String::trim)
-                .filter(url -> !url.isEmpty())
-                .distinct()
-                .toList();
-        if (urls.isEmpty()) {
-            return List.of();
-        }
-        if (urls.size() > MAX_ATTACHMENTS) {
-            log.warn("建单被拒绝：附件超过上限, size={}, operatorId={}", urls.size(), reporterId);
-            throw new BusinessException(400, "最多关联 5 个附件");
-        }
+    private EditChanges applyChanges(Ticket ticket, TicketUpdateRequest request, Long operatorId) {
+        boolean dirty = false;
+        boolean urgencyChanged = false;
 
-        List<TicketAttachment> attachments = attachmentMapper.selectList(
-                Wrappers.<TicketAttachment>lambdaQuery()
-                        .in(TicketAttachment::getFileUrl, urls)
-                        .eq(TicketAttachment::getUploaderId, reporterId)
-                        .isNull(TicketAttachment::getTicketId));
-        if (attachments.size() != urls.size()) {
-            log.warn("建单被拒绝：附件不存在、非本人上传或已被关联, requested={}, matched={}, operatorId={}",
-                    urls.size(), attachments.size(), reporterId);
-            throw new BusinessException(400, "附件不存在或不可用");
+        if (request.getTitle() != null) {
+            String title = request.getTitle().trim();
+            if (title.isEmpty()) {
+                log.warn("编辑被拒绝：标题为空白, ticketId={}, operatorId={}",
+                        ticket.getId(), operatorId);
+                throw new BusinessException(400, "标题不能为空白");
+            }
+            if (!title.equals(ticket.getTitle())) {
+                ticket.setTitle(title);
+                dirty = true;
+            }
         }
-        return attachments;
+        if (request.getDescription() != null) {
+            String description = request.getDescription().trim();
+            if (description.isEmpty()) {
+                log.warn("编辑被拒绝：描述为空白, ticketId={}, operatorId={}",
+                        ticket.getId(), operatorId);
+                throw new BusinessException(400, "描述不能为空白");
+            }
+            if (!description.equals(ticket.getDescription())) {
+                ticket.setDescription(description);
+                dirty = true;
+            }
+        }
+        if (StringUtils.hasText(request.getCategory())) {
+            String category = TicketCategory.from(request.getCategory()).name();
+            if (!category.equals(ticket.getCategory())) {
+                ticket.setCategory(category);
+                dirty = true;
+            }
+        }
+        if (StringUtils.hasText(request.getUrgency())) {
+            Urgency urgency = Urgency.from(request.getUrgency());
+            if (!urgency.name().equals(ticket.getUrgency())) {
+                ticket.setUrgency(urgency.name());
+                urgencyChanged = true;
+                dirty = true;
+            }
+        }
+        if (request.getDeviceId() != null) {
+            Device device = requireDeviceOfCustomer(request.getDeviceId(), ticket.getCustomerId(), operatorId);
+            if (!Objects.equals(device.getId(), ticket.getDeviceId())) {
+                ticket.setDeviceId(device.getId());
+                dirty = true;
+            }
+        }
+        return new EditChanges(dirty, urgencyChanged);
     }
 
     /**
-     * 实体转工单详情视图。
+     * 按新紧急度重算 SLA：换策略、以本次请求时刻为基准重写两个 deadline。
      *
-     * @param ticket           已落库工单
-     * @param customer         客户
-     * @param device           设备，可为 null
-     * @param operator         当前用户
-     * @param policy           命中的 SLA 策略
-     * @param attachments      已关联附件
-     * @param now              建单时刻，用于计算剩余分钟
-     * @param responseDeadline 响应截止
-     * @param resolveDeadline  解决截止
-     * @return 工单详情视图
+     * <p>
+     * 暂停中把 {@code paused_at} 平移到 now：从 now 起算等于把「now 之前的暂停」作废，
+     * 若不平移，恢复时还会再补一次那段时间，造成重复补时。
+     * </p>
+     *
+     * @param ticket 工单实体
+     * @param policy 新紧急度命中的启用策略
+     * @param now    本次请求时刻
      */
-    private TicketDetailVO toVO(Ticket ticket, Customer customer, Device device, LoginUser operator,
-            SlaPolicy policy, List<TicketAttachment> attachments, LocalDateTime now,
-            LocalDateTime responseDeadline, LocalDateTime resolveDeadline) {
-        return TicketDetailVO.builder()
-                .id(ticket.getId())
-                .ticketNo(ticket.getTicketNo())
-                .title(ticket.getTitle())
-                .description(ticket.getDescription())
-                .category(ticket.getCategory())
-                .urgency(ticket.getUrgency())
-                .status(ticket.getStatus())
-                .customer(new TicketDetailVO.CustomerBrief(customer.getId(), customer.getName(), customer.getPhone()))
-                .device(device == null ? null
-                        : new TicketDetailVO.DeviceBrief(
-                                device.getId(), device.getModel(), device.getSerialNo(), device.getWarrantyEnd()))
-                .reporter(new TicketDetailVO.UserBrief(operator.id(), operator.displayName()))
-                .assignee(null)
-                .team(null)
-                .sla(buildSla(policy, now, responseDeadline, resolveDeadline))
-                .ai(null)
-                .attachments(attachments.stream().map(this::toAttachmentVO).toList())
-                .createdAt(ticket.getCreatedAt())
-                .updatedAt(ticket.getUpdatedAt())
-                .version(ticket.getVersion() == null ? 0 : ticket.getVersion())
-                .build();
+    private void rebaseSla(Ticket ticket, SlaPolicy policy, LocalDateTime now) {
+        ticket.setSlaPolicyId(policy.getId());
+        ticket.setResponseDeadline(now.plusMinutes(policy.getResponseMinutes()));
+        ticket.setResolveDeadline(now.plusMinutes(policy.getResolveMinutes()));
+        if (ticket.getPausedAt() != null) {
+            ticket.setPausedAt(now);
+        }
+        log.info("编辑紧急度重算 SLA, ticketId={}, policyId={}, responseDeadline={}, resolveDeadline={}",
+                ticket.getId(), policy.getId(), ticket.getResponseDeadline(), ticket.getResolveDeadline());
     }
 
     /**
-     * 组装 SLA 状态：未派单工单没有首次响应，也不处于暂停。
+     * 一次编辑请求的变更结果。
      *
-     * @param policy           命中的策略
-     * @param now              当前时刻
-     * @param responseDeadline 响应截止
-     * @param resolveDeadline  解决截止
-     * @return SLA 状态视图
+     * @param dirty          是否有任何字段真的发生变化
+     * @param urgencyChanged 紧急度是否变化，只有变化时才重算 SLA
      */
-    private SlaStatusVO buildSla(SlaPolicy policy,
-            LocalDateTime now, LocalDateTime responseDeadline, LocalDateTime resolveDeadline) {
-        long responseRemaining = Duration.between(now, responseDeadline).toMinutes();
-        long resolveRemaining = Duration.between(now, resolveDeadline).toMinutes();
-        return SlaStatusVO.builder()
-                .policyId(policy.getId())
-                .policyName(policy.getName())
-                .responseDeadline(responseDeadline)
-                .resolveDeadline(resolveDeadline)
-                .firstResponseAt(null)
-                .paused(false)
-                .pausedTotalMinutes(0)
-                .responseRemainingMinutes(responseRemaining)
-                .resolveRemainingMinutes(resolveRemaining)
-                .responseBreached(now.isAfter(responseDeadline))
-                .resolveBreached(now.isAfter(resolveDeadline))
-                .build();
-    }
-
-    /**
-     * 附件实体转视图。
-     *
-     * @param attachment 附件实体
-     * @return 附件视图
-     */
-    private AttachmentVO toAttachmentVO(TicketAttachment attachment) {
-        return AttachmentVO.builder()
-                .id(attachment.getId())
-                .fileName(attachment.getFileName())
-                .fileUrl(attachment.getFileUrl())
-                .fileSize(attachment.getFileSize())
-                .mimeType(attachment.getMimeType())
-                .createdAt(attachment.getCreatedAt())
-                .build();
+    private record EditChanges(boolean dirty, boolean urgencyChanged) {
     }
 }

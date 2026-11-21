@@ -3,6 +3,8 @@ package com.servicedesk.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.Version;
+
 import lombok.Data;
 
 import java.math.BigDecimal;
@@ -13,7 +15,8 @@ import java.time.LocalDateTime;
  *
  * <p>
  * 属于持久化层。字段与 {@code docs/ER图.md} 4.5 一一对应，
- * {@code customer_id} / {@code device_id} / {@code reporter_id} / {@code assignee_id} /
+ * {@code customer_id} / {@code device_id} / {@code reporter_id} /
+ * {@code assignee_id} /
  * {@code team_id} / {@code sla_policy_id} 均为逻辑外键，不建物理 FK，写入前由业务层显式校验。
  * </p>
  *
@@ -45,7 +48,10 @@ public class Ticket {
   /** 问题描述，必填，长度不超过 5000。 */
   private String description;
 
-  /** 故障分类：HARDWARE / SOFTWARE / CONSUMABLE / INSTALL / COMPLAINT / OTHER；未指定时由业务层写 OTHER。 */
+  /**
+   * 故障分类：HARDWARE / SOFTWARE / CONSUMABLE / INSTALL / COMPLAINT / OTHER；未指定时由业务层写
+   * OTHER。
+   */
   private String category;
 
   /** 紧急度：P0 / P1 / P2 / P3；未指定时由业务层写 P2，并决定匹配哪条 SLA 策略。 */
@@ -87,7 +93,9 @@ public class Ticket {
   /** 关闭时间，可空；进入 CLOSED 时写入。 */
   private LocalDateTime closedAt;
 
-  /** 本次暂停开始时间，可空；进入 WAITING_CUSTOMER 时写入，恢复时清空并累加到 {@link #pausedTotalMinutes}。 */
+  /**
+   * 本次暂停开始时间，可空；进入 WAITING_CUSTOMER 时写入，恢复时清空并累加到 {@link #pausedTotalMinutes}。
+   */
   private LocalDateTime pausedAt;
 
   /** 累计暂停分钟数，非空，默认 0；解决截止时间按此顺延。 */
@@ -109,14 +117,15 @@ public class Ticket {
   private Integer aiCorrected;
 
   /**
-   * 版本号，默认 0，当前按普通字段读写。
+   * 乐观锁版本号，默认 0，由 MyBatis-Plus 维护。
    *
    * <p>
-   * 暂不启用乐观锁：未加 {@code @Version}、未注册乐观锁拦截器，
-   * 插入时留空由数据库默认值填 0。等编辑接口（T-04）落地再统一切换，
-   * 在此之前业务代码不要手工维护本字段。
+   * 更新时必须传查询出来的原值，插件会拼 {@code WHERE version = ?} 并自增；
+   * 业务代码禁止手工 {@code setVersion(...)}，否则条件永远不成立。
+   * 影响行数为 0 即并发冲突，统一转 409。
    * </p>
    */
+  @Version
   private Integer version;
 
   /** 创建时间，数据库默认值填充。 */

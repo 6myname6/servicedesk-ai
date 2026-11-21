@@ -1,7 +1,7 @@
 package com.servicedesk.vo;
 
 import lombok.Builder;
-import lombok.Getter;
+import lombok.Data;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -21,7 +21,7 @@ import java.util.List;
  * 派单（F-01）与 AI 分类（AI-01）尚未接入，字段保留以稳定契约。
  * </p>
  */
-@Getter
+@Data
 @Builder
 public class TicketDetailVO {
 
