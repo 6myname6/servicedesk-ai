@@ -9,7 +9,7 @@ import java.util.Locale;
  *
  * <p>
  * 属于枚举字典层。枚举名必须与 {@code ticket.category} 的存储值、ER 图第 6 节字典、
- * 产品文档 7.5 分类体系保持一致；AI 输出与人工修改使用同一套取值。
+ * 开发文档 7.5 分类体系保持一致；AI 输出与人工修改使用同一套取值。
  * </p>
  */
 public enum TicketCategory {

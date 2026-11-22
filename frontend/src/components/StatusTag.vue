@@ -5,7 +5,7 @@ import { STATUS_LABELS } from '@/utils/dict'
 
 /** 工单状态标签，颜色按状态语义固定（非终态用暖色/蓝色，终态用绿/灰）。 */
 const props = defineProps({
-  /** 状态编码，见产品文档 12.1。 */
+  /** 状态编码，见开发文档 12.1。 */
   status: { type: String, required: true }
 })
 

@@ -420,7 +420,7 @@ onMounted(() => {
             </div>
           </dl>
           <p class="side-card__desc">
-            按产品文档 7.3 的默认策略预览；实际 deadline 由服务端在提交时按启用的策略计算。
+            按开发文档 7.3 的默认策略预览；实际 deadline 由服务端在提交时按启用的策略计算。
           </p>
         </section>
 

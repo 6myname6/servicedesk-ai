@@ -140,3 +140,4 @@ AGENTS.md
 /deploy/nginx/
 /deploy/tmp/
 .vscode/launch.json
+backend/src/main/resources/docs/开发文档.md

@@ -19,7 +19,7 @@ import { formatDateTime, formatFileSize, formatMinutes, parseDateTime } from '@/
 /**
  * 工单详情：状态操作的全部动作定义。
  *
- * <p>target 取自产品文档 7.1 状态机，原型只做本页状态与时间线的本地变更。</p>
+ * <p>target 取自开发文档 7.1 状态机，原型只做本页状态与时间线的本地变更。</p>
  */
 const ACTIONS = {
   dispatch: { label: '派单', target: 'ASSIGNED', type: 'primary' },
@@ -42,7 +42,8 @@ const STATUS_ACTIONS = {
   WAITING_CUSTOMER: ['reply', 'cancel'],
   RESOLVED: ['close', 'reopen'],
   REOPENED: ['start', 'dispatch', 'cancel'],
-  CLOSED: ['reopen'],
+  // CLOSED / CANCELLED 为终态，按产品状态机不提供重开
+  CLOSED: [],
   CANCELLED: []
 }
 
@@ -320,7 +321,7 @@ function submitRating() {
               v-model="draft.content"
               type="textarea"
               :rows="3"
-              maxlength="500"
+              maxlength="2000"
               show-word-limit
               placeholder="填写处理记录，客户可在工单里看到；勾选「内部备注」后仅内部人员可见"
             />

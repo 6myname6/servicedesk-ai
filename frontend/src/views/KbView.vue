@@ -11,7 +11,7 @@ import { formatShortDateTime } from '@/utils/format'
 /**
  * 知识库文章状态展示配置。
  *
- * <p>状态取值与产品文档 P-06 一致：PENDING 灰、PARSING/INDEXING 蓝、
+ * <p>状态取值与开发文档 P-06 一致：PENDING 灰、PARSING/INDEXING 蓝、
  * READY 绿、FAILED 红（悬浮显示失败原因）。</p>
  */
 const KB_STATUS = {

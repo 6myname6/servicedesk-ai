@@ -1,7 +1,7 @@
 # 智维工单（ServiceDesk AI）· ER 图与数据字典
 
 > 版本：V1.0　｜　日期：2026-10-27
-> 关联：[产品文档](产品文档.md) ｜ [接口文档](接口文档.md)
+> 关联：[开发文档](开发文档.md) ｜ [接口文档](接口文档.md)
 > 约定：MySQL 8.0 / utf8mb4 / InnoDB；逻辑外键（不建物理 FK）；所有表带 `created_at`，可变表带 `updated_at`。
 > 向量存储：PostgreSQL 16 + pgvector，`kb_chunk` 整表落在 PG 库 `servicedesk_kb`，其余 13 张表在 MySQL，不混存。
 

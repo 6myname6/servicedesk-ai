@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Avatar, Lock, Message, User } from '@element-plus/icons-vue'
 
-/** 验证码倒计时总秒数，与产品文档 P-12 的 60 秒一致。 */
+/** 验证码倒计时总秒数，与开发文档 P-12 的 60 秒一致。 */
 const COUNTDOWN_SECONDS = 60
 
 /** 密码规则：8-32 位且同时包含字母与数字。 */

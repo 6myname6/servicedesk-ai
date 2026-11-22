@@ -4,7 +4,7 @@
 -- 说明：建单（T-01）按 ticket.urgency 匹配本表 priority，
 --      取 response_minutes / resolve_minutes 计算 ticket 的两个 deadline；
 --      优先级唯一由 uk_priority 兜底，不建物理 FK。
---      默认 4 条策略（产品文档 7.3）不在此文件插入，见种子数据缺口。
+--      默认 4 条策略（开发文档 7.3）不在此文件插入，见种子数据缺口。
 -- =============================================================
 
 CREATE TABLE IF NOT EXISTS `sla_policy` (

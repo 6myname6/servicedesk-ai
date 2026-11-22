@@ -1,7 +1,7 @@
 package com.servicedesk.entity.enums;
 
 /**
- * 工单事件类型（时间线），对应 ER 图第 6 节与产品文档 12.1 的字典。
+ * 工单事件类型（时间线），对应 ER 图第 6 节与开发文档 12.1 的字典。
  *
  * <p>
  * 属于枚举字典层。枚举名必须与 {@code ticket_event.type} 的存储值一致，禁止魔法字符串。

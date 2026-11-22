@@ -2,6 +2,7 @@ package com.servicedesk.service;
 
 import com.servicedesk.common.api.PageResult;
 import com.servicedesk.common.exception.BusinessException;
+import com.servicedesk.dto.request.ticket.TicketAssignRequest;
 import com.servicedesk.dto.request.ticket.TicketCancelRequest;
 import com.servicedesk.dto.request.ticket.TicketCreateRequest;
 import com.servicedesk.dto.request.ticket.TicketFeedbackRequest;
@@ -15,10 +16,11 @@ import com.servicedesk.vo.TicketListItemVO;
  * 工单服务，对应接口文档第 2 章。
  *
  * <p>
- * 属于业务层。已落地建单（T-01）、列表（T-02）、详情（T-03）与编辑（T-04）：
+ * 属于业务层。已落地建单（T-01）、列表（T-02）、详情（T-03）、编辑（T-04）、取消（T-05）、
+ * 评价（T-06）与派单（F-01）：
  * 建单校验客户/设备、生成工单号、按紧急度写两个 deadline、状态置 NEW、回填附件；
  * 详情按数据范围判定可见性；编辑支持字段可选 + 乐观锁，紧急度变化时重算 SLA。
- * 派单、状态机、时间线在后续切片追加。
+ * 状态迁移（F-02）单独在 {@link TicketTransitionService}，处理记录与时间线查询在后续切片追加。
  * </p>
  *
  * <p>
@@ -119,4 +121,22 @@ public interface TicketService {
    * @throws BusinessException 非本人或不存在抛 404；未关闭或重复评价抛 409；评分越界抛 400
    */
   TicketFeedbackVO feedback(Long id, TicketFeedbackRequest request);
+
+  /**
+   * 派单（F-01）。
+   *
+   * <p>
+   * 事务边界：主表的状态、处理人、团队更新与 {@code ticket_event} 写入在同一事务内，
+   * 任一步失败整体回滚，不能出现「工单已派出去但时间线没有记录」。
+   * 幂等性：不幂等，重复派单第二次命中「状态不可派单」返回 409。
+   * </p>
+   *
+   * @param id      工单 ID
+   * @param request 派单入参，工程师与版本号必填，备注可选
+   * @return 派单后的工单详情，{@code status=ASSIGNED}，{@code assignee}/{@code team} 有值
+   * @throws BusinessException 不存在或越权抛 404；非主管/管理员抛 403；
+   *                           状态不可派单或版本冲突抛 409；工程师不存在、已停用、
+   *                           非工程师、未加入团队或不属于本团队抛 400
+   */
+  TicketDetailVO assign(Long id, TicketAssignRequest request);
 }

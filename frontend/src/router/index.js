@@ -4,7 +4,7 @@ import { useAuthStore } from '@/stores/auth'
 import AppLayout from '@/layouts/AppLayout.vue'
 
 /**
- * 路由表，对应产品文档 6.1 页面清单。
+ * 路由表，对应开发文档 6.1 页面清单。
  *
  * <p>{@code meta.roles} 为空表示所有登录用户可见；有值时按角色拦截，
  * 具体数据范围仍由后端裁剪，前端只做入口级控制。</p>

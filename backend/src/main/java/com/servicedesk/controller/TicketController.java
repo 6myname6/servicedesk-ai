@@ -2,14 +2,17 @@ package com.servicedesk.controller;
 
 import com.servicedesk.common.api.PageResult;
 import com.servicedesk.common.api.Result;
+import com.servicedesk.dto.request.ticket.TicketAssignRequest;
 import com.servicedesk.dto.request.ticket.TicketCancelRequest;
 import com.servicedesk.dto.request.ticket.TicketCreateRequest;
 import com.servicedesk.dto.request.ticket.TicketFeedbackRequest;
 import com.servicedesk.dto.request.ticket.TicketQueryRequest;
+import com.servicedesk.dto.request.ticket.TicketStatusTransitionRequest;
 import com.servicedesk.dto.request.ticket.TicketUpdateRequest;
 import com.servicedesk.entity.enums.Role;
 import com.servicedesk.security.RequiredRole;
 import com.servicedesk.service.TicketService;
+import com.servicedesk.service.TicketTransitionService;
 import com.servicedesk.vo.TicketDetailVO;
 import com.servicedesk.vo.TicketFeedbackVO;
 import com.servicedesk.vo.TicketListItemVO;
@@ -17,6 +20,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -25,17 +29,20 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 工单接口，对应接口文档第 2 章（建单 2.2、列表 2.1、详情 2.3、编辑 2.4、取消 2.5、评价 2.6）。
+ * 工单接口，对应接口文档第 2 章（建单 2.2、列表 2.1、详情 2.3、编辑 2.4、取消 2.5、评价 2.6）
+ * 与第 3 章工单流转（3.1 状态迁移、3.2 派单）。
  *
  * <p>
  * 属于接口层，只做参数接收、{@code @Valid} 校验与响应包装，不写业务判断：
- * 角色由 {@code RoleInterceptor} 依据方法上的 {@link RequiredRole} 判定，
- * 行级数据范围与状态校验由业务层完成。
+ * 角色一般由 {@code RoleInterceptor} 依据方法上的 {@link RequiredRole} 判定，
+ * 行级数据范围与状态校验由业务层完成。例外是状态迁移：同一接口对不同流转有不同角色要求，
+ * 接口层不拦角色（登录即可），由业务层的迁移表返回 403。
  * </p>
  *
  * <p>
  * 建单只要求登录，报修人取当前登录用户（业务层从 {@code UserContext} 读取），
  * 不接收请求参数中的上报人；详情对所有角色开放，看到哪张单由数据范围决定。
+ * 状态迁移走独立的 {@link TicketTransitionService}，其余接口走 {@link TicketService}。
  * </p>
  *
  * <p>
@@ -49,8 +56,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/tickets")
 public class TicketController {
 
-  /** 工单服务。 */
+  /** 工单服务：建单、列表、详情、编辑、取消、评价、派单。 */
   private final TicketService ticketService;
+
+  /** 状态迁移服务：F-02 的七个流转动作，独立于工单主链路。 */
+  private final TicketTransitionService ticketTransitionService;
 
   /**
    * 创建工单。
@@ -155,6 +165,49 @@ public class TicketController {
       @RequestBody @Valid TicketFeedbackRequest request) {
     log.debug("收到工单评价请求, ticketId={}, score={}", id, request.getScore());
     return Result.success(ticketService.feedback(id, request));
+  }
+
+  /**
+   * 派单：把 NEW / REOPENED 工单指派给工程师。
+   *
+   * <p>
+   * 只有主管与管理员可调用。被派人必须是启用中的 {@code ENGINEER}，且属于主管管理的团队；
+   * 管理员不受团队限制。状态、团队归属与版本冲突全部由业务层判定（F-01）。
+   * </p>
+   *
+   * @param id      工单 ID
+   * @param request 派单入参，工程师与版本号必填，备注可选
+   * @return 派单后的工单详情，{@code status=ASSIGNED}
+   */
+  @PostMapping("/{id}/assign")
+  @RequiredRole({ Role.SUPERVISOR, Role.ADMIN })
+  public Result<TicketDetailVO> assign(@PathVariable Long id,
+      @RequestBody @Valid TicketAssignRequest request) {
+    log.debug("收到派单请求, ticketId={}, assigneeId={}, version={}",
+        id, request.getAssigneeId(), request.getVersion());
+    return Result.success(ticketService.assign(id, request));
+  }
+
+  /**
+   * 状态迁移：按状态机把工单推进到目标状态。
+   *
+   * <p>
+   * 不标 {@code @RequiredRole}：同一接口对不同迁移有不同角色要求（接单 / 开始处理 / 等客户 /
+   * 客户回复 / 解决仅被派工程师，验收关闭 / 重开为报修人本人、主管、管理员），
+   * 单一注解无法表达。登录即可访问，角色、状态可达性与数据范围统一由业务层的
+   * {@code TicketTransition} 表 + 访问守卫判定（F-02）。
+   * </p>
+   *
+   * @param id      工单 ID
+   * @param request 迁转入参，目标状态与版本号必填，备注可选
+   * @return 迁移后的工单详情，见接口文档 3.1
+   */
+  @PatchMapping("/{id}/status")
+  public Result<TicketDetailVO> transitionStatus(@PathVariable Long id,
+      @RequestBody @Valid TicketStatusTransitionRequest request) {
+    log.debug("收到工单状态迁移请求, ticketId={}, targetStatus={}, version={}",
+        id, request.getTargetStatus(), request.getVersion());
+    return Result.success(ticketTransitionService.transitionStatus(id, request));
   }
 
 }

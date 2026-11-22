@@ -9,6 +9,7 @@ import com.servicedesk.common.context.LoginUser;
 import com.servicedesk.common.context.UserContext;
 import com.servicedesk.common.exception.BusinessException;
 import com.servicedesk.domain.ticket.TicketScope;
+import com.servicedesk.dto.request.ticket.TicketAssignRequest;
 import com.servicedesk.dto.request.ticket.TicketCancelRequest;
 import com.servicedesk.dto.request.ticket.TicketCreateRequest;
 import com.servicedesk.dto.request.ticket.TicketFeedbackRequest;
@@ -17,10 +18,12 @@ import com.servicedesk.dto.request.ticket.TicketUpdateRequest;
 import com.servicedesk.entity.Customer;
 import com.servicedesk.entity.Device;
 import com.servicedesk.entity.SlaPolicy;
+import com.servicedesk.entity.SysUser;
 import com.servicedesk.entity.Ticket;
 import com.servicedesk.entity.TicketAttachment;
 import com.servicedesk.entity.TicketEvent;
 import com.servicedesk.entity.TicketFeedback;
+import com.servicedesk.entity.enums.Role;
 import com.servicedesk.entity.enums.TicketCategory;
 import com.servicedesk.entity.enums.TicketEventType;
 import com.servicedesk.entity.enums.TicketStatus;
@@ -28,6 +31,7 @@ import com.servicedesk.entity.enums.Urgency;
 import com.servicedesk.mapper.CustomerMapper;
 import com.servicedesk.mapper.DeviceMapper;
 import com.servicedesk.mapper.SlaPolicyMapper;
+import com.servicedesk.mapper.SysUserMapper;
 import com.servicedesk.mapper.TicketEventMapper;
 import com.servicedesk.mapper.TicketFeedbackMapper;
 import com.servicedesk.mapper.TicketMapper;
@@ -53,7 +57,13 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * 工单服务实现（建单 T-01、列表 T-02、详情 T-03、编辑 T-04、取消 T-05、评价 T-06）。
+ * 工单服务实现（建单 T-01、列表 T-02、详情 T-03、编辑 T-04、取消 T-05、评价 T-06、派单 F-01）。
+ *
+ * <p>
+ * 状态迁移（F-02）不在这里：七个流转动作的角色、时间戳与 SLA 副作用集中在
+ * {@code TicketTransitionServiceImpl}，本类只保留建单 / 查询 / 编辑 / 取消 / 评价 / 派单，
+ * 避免继续膨胀（编码规范 7.1）。
+ * </p>
  *
  * <p>
  * 属于业务实现层。建单主链路：
@@ -100,6 +110,9 @@ public class TicketServiceImpl implements TicketService {
 
     /** 工单号生成器，Redis 日序列 + 库内兜底。 */
     private final TicketNoGenerator ticketNoGenerator;
+
+    /** 用户 Mapper，派单时校验被派人是否存在、启用、角色与团队。 */
+    private final SysUserMapper sysUserMapper;
 
     /** 客户 Mapper，仅用于建单前校验客户存在，装配由 {@link TicketAssembler} 负责。 */
     private final CustomerMapper customerMapper;
@@ -276,7 +289,7 @@ public class TicketServiceImpl implements TicketService {
     public TicketDetailVO cancel(Long id, TicketCancelRequest request) {
         LoginUser operator = UserContext.getRequired();
         TicketScope scope = ticketScopeResolver.resolve(operator);
-        Ticket ticket =         ticketAccessGuard.requireVisible(id, scope, operator);
+        Ticket ticket = ticketAccessGuard.requireVisible(id, scope, operator);
         ticketAccessGuard.assertVersionMatches(ticket, request.getVersion(), operator);
 
         TicketStatus status = TicketStatus.from(ticket.getStatus());
@@ -362,6 +375,67 @@ public class TicketServiceImpl implements TicketService {
     }
 
     /**
+     * 派单：把 NEW / REOPENED 工单指派给本团队工程师。
+     *
+     * <p>
+     * 判定顺序固定：可见性 404 → 版本 409 → 状态 409 → 工程师 400。
+     * 先判 404 再判 409，避免通过状态码差异确认「工单存在」；
+     * 版本放在状态之前，与取消、编辑保持一致的口径。
+     * </p>
+     *
+     * <p>
+     * 待派单池例外：{@code NEW} 且 {@code team_id} 为空的工单尚未归属任何团队，
+     * 按数据范围主管本应看不到它，但派单正是把它归入团队的动作，因此允许主管派这类单；
+     * 派单成功后 {@code team_id} 随工程师写入，工单随即进入该主管的可见范围。
+     * </p>
+     *
+     * @param id      工单 ID
+     * @param request 派单入参
+     * @return 派单后的工单详情
+     * @throws BusinessException 不存在或越权抛 404；非主管/管理员抛 403；
+     *                           状态不可派单或版本冲突抛 409；工程师不可派抛 400
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public TicketDetailVO assign(Long id, TicketAssignRequest request) {
+        LoginUser operator = UserContext.getRequired();
+        TicketScope scope = ticketScopeResolver.resolve(operator);
+        Ticket ticket = requireAssignableTicket(id, scope, operator);
+        ticketAccessGuard.assertVersionMatches(ticket, request.getVersion(), operator);
+
+        TicketStatus status = TicketStatus.from(ticket.getStatus());
+        if (status != TicketStatus.NEW && status != TicketStatus.REOPENED) {
+            log.warn("派单被拒绝：当前状态不可派单, ticketId={}, status={}, operatorId={}",
+                    id, status, operator.id());
+            throw new BusinessException(409, "当前状态 " + status.name() + " 不可派单");
+        }
+
+        SysUser assignee = requireAssignableEngineer(request.getAssigneeId(), scope, operator);
+
+        String fromStatus = ticket.getStatus();
+        LocalDateTime now = LocalDateTime.now(clock).withNano(0);
+        ticket.setAssigneeId(assignee.getId());
+        // 团队随工程师走：不允许出现「工程师在 A 组、工单挂在 B 组」
+        ticket.setTeamId(assignee.getTeamId());
+        ticket.setStatus(TicketStatus.ASSIGNED.name());
+        if (ticketMapper.updateById(ticket) == 0) {
+            log.warn("派单版本冲突, ticketId={}, operatorId={}, requestVersion={}",
+                    id, operator.id(), request.getVersion());
+            throw new BusinessException(409, TicketAccessGuard.MSG_VERSION_CONFLICT);
+        }
+
+        String comment = trimToNull(request.getComment());
+        ticketEventMapper.insert(buildAssignEvent(ticket.getId(), fromStatus, assignee, comment,
+                operator.id(), now));
+
+        // 备注原文不进日志：可能带客户现场细节，只记录长度
+        log.info("派单成功, ticketId={}, assigneeId={}, teamId={}, fromStatus={}, operatorId={}, commentLength={}",
+                id, assignee.getId(), assignee.getTeamId(), fromStatus, operator.id(),
+                comment == null ? 0 : comment.length());
+        return ticketAssembler.assembleDetail(ticketMapper.selectById(id), now);
+    }
+
+    /**
      * 校验工单是否允许评价。
      *
      * <p>
@@ -402,6 +476,131 @@ public class TicketServiceImpl implements TicketService {
         event.setToStatus(TicketStatus.CANCELLED.name());
         event.setOperatorId(operatorId);
         event.setContent(reason);
+        event.setCreatedAt(now);
+        return event;
+    }
+
+    /**
+     * 派单场景的工单可见性判定。
+     *
+     * <p>
+     * 与详情、编辑不同，派单要在「工单归属团队」尚未确定时可用：
+     * {@code NEW} 且 {@code team_id} 为空的待派单池放行给所有主管，
+     * 否则主管永远看不到需要他派单的工单（详见开发文档 3.3.1 的过渡口径）。
+     * 已归属团队的单仍按 {@link TicketScope} 判定，跨团队统一 404，
+     * 不区分「不存在」与「无权派单」。
+     * </p>
+     *
+     * <p>
+     * 角色在这里只参与「范围」计算：{@code ADMIN} 全量、{@code SUPERVISOR} 可认领待派单池。
+     * 「只有主管/管理员能调这个接口」由接口层的 {@code @RequiredRole} 负责，
+     * 本方法不重复返回 403，避免同一规则在两处实现。
+     * </p>
+     *
+     * @param id       工单 ID
+     * @param scope    当前用户数据范围
+     * @param operator 当前登录用户，用于日志与角色判定
+     * @return 工单实体
+     * @throws BusinessException 工单不存在或不在可派单范围内时抛出 404
+     */
+    private Ticket requireAssignableTicket(Long id, TicketScope scope, LoginUser operator) {
+        Ticket ticket = ticketMapper.selectById(id);
+        if (ticket == null) {
+            log.warn("派单被拒绝：工单不存在, ticketId={}, operatorId={}", id, operator.id());
+            throw new BusinessException(404, TicketAccessGuard.MSG_NOT_FOUND);
+        }
+
+        Role role = Role.from(operator.role());
+        if (role == Role.ADMIN) {
+            return ticket;
+        }
+
+        // 只有主管能认领待派单池；这里判角色是为了算「范围」，不是重复接口层的 403——
+        // 工程师或报修人即使绕过 HTTP 直接调用，也只会落到下面的 scope 判定得到 404
+        boolean pendingPool = role == Role.SUPERVISOR
+                && ticket.getTeamId() == null
+                && TicketStatus.NEW.name().equals(ticket.getStatus());
+        if (pendingPool
+                || scope.allows(ticket.getReporterId(), ticket.getAssigneeId(), ticket.getTeamId())) {
+            return ticket;
+        }
+
+        log.warn("派单越权被拒绝, ticketId={}, teamId={}, operatorId={}",
+                id, ticket.getTeamId(), operator.id());
+        throw new BusinessException(404, TicketAccessGuard.MSG_NOT_FOUND);
+    }
+
+    /**
+     * 校验被派工程师是否可接单。
+     *
+     * <p>
+     * 四道门槛：存在且启用、角色为 {@code ENGINEER}、已加入团队、属于主管管理的团队。
+     * 全部失败都返回 400 而不是 404：这里校验的是请求参数指向的人是否可用，
+     * 不是工单资源本身；且派单是内部管理动作，不存在社工枚举风险。
+     * 管理员不校验团队，可以派给任意团队（开发文档 3.3.1 对 ADMIN 不限范围）。
+     * </p>
+     *
+     * @param assigneeId 被派工程师 ID
+     * @param scope      当前用户数据范围
+     * @param operator   当前登录用户，用于日志与角色判定
+     * @return 被派工程师实体
+     * @throws BusinessException 不存在、停用、非工程师、未加入团队或跨团队时抛出 400
+     */
+    private SysUser requireAssignableEngineer(Long assigneeId, TicketScope scope, LoginUser operator) {
+        SysUser assignee = sysUserMapper.selectById(assigneeId);
+        if (assignee == null || !Integer.valueOf(1).equals(assignee.getStatus())) {
+            log.warn("派单被拒绝：工程师不存在或已停用, assigneeId={}, operatorId={}",
+                    assigneeId, operator.id());
+            throw new BusinessException(400, "工程师不存在或已停用");
+        }
+        if (!Role.ENGINEER.name().equals(assignee.getRole())) {
+            log.warn("派单被拒绝：目标账号不是工程师, assigneeId={}, role={}, operatorId={}",
+                    assigneeId, assignee.getRole(), operator.id());
+            throw new BusinessException(400, "只能派给工程师");
+        }
+        if (assignee.getTeamId() == null) {
+            log.warn("派单被拒绝：工程师未加入团队, assigneeId={}, operatorId={}",
+                    assigneeId, operator.id());
+            throw new BusinessException(400, "该工程师未加入团队，无法派单");
+        }
+        if (Role.from(operator.role()) == Role.SUPERVISOR
+                && !scope.visibility().teamIds().contains(assignee.getTeamId())) {
+            log.warn("派单被拒绝：工程师不属于本团队, assigneeId={}, assigneeTeamId={}, operatorId={}",
+                    assigneeId, assignee.getTeamId(), operator.id());
+            throw new BusinessException(400, "只能派给本团队工程师");
+        }
+        return assignee;
+    }
+
+    /**
+     * 构造派单事件，用于时间线。
+     *
+     * <p>
+     * 正文写入「指派工程师 + 备注」而不是只存备注：时间线不带关联查询，
+     * 只存备注会让读者看不出这一单派给了谁。
+     * </p>
+     *
+     * @param ticketId   工单 ID
+     * @param fromStatus 派单前状态
+     * @param assignee   被派工程师
+     * @param comment    派单备注，可为 null
+     * @param operatorId 操作人 ID
+     * @param now        发生时间
+     * @return 待插入的事件实体
+     */
+    private TicketEvent buildAssignEvent(Long ticketId, String fromStatus, SysUser assignee,
+            String comment, Long operatorId, LocalDateTime now) {
+        TicketEvent event = new TicketEvent();
+        event.setTicketId(ticketId);
+        event.setType(TicketEventType.ASSIGN.name());
+        event.setFromStatus(fromStatus);
+        event.setToStatus(TicketStatus.ASSIGNED.name());
+        event.setOperatorId(operatorId);
+        String content = "指派工程师：" + assignee.getDisplayName();
+        if (comment != null) {
+            content = content + "；备注：" + comment;
+        }
+        event.setContent(content);
         event.setCreatedAt(now);
         return event;
     }

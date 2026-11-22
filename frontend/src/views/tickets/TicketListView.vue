@@ -9,7 +9,7 @@ import SlaRemaining from '@/components/SlaRemaining.vue'
 import { CATEGORY_LABELS, CATEGORY_OPTIONS, STATUS_OPTIONS, URGENCY_OPTIONS } from '@/utils/dict'
 import { formatShortDateTime } from '@/utils/format'
 
-/** 允许的每页条数，与产品文档 P-03 的 10/20/50 一致。 */
+/** 允许的每页条数，与开发文档 P-03 的 10/20/50 一致。 */
 const PAGE_SIZES = [10, 20, 50]
 
 const route = useRoute()
