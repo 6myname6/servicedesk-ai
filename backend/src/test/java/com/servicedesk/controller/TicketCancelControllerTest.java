@@ -192,32 +192,24 @@ class TicketCancelControllerTest {
   }
 
   /**
-   * 暂停中的工单取消后必须清空 {@code paused_at}。
-   *
-   * <p>
-   * 专门守住「updateById 跳过 null 字段」这个坑：状态更新与清空暂停标记是两次写入，
-   * 少了后一次，终态工单会一直显示「暂停中」。
-   * </p>
+   * 验收不通过的终态工单不可取消。
    *
    * @throws Exception MockMvc 调用异常
    */
   @Test
-  @DisplayName("取消：暂停中的工单取消后清零 paused_at")
-  void shouldClearPausedAtWhenCancellingPausedTicket() throws Exception {
-    Ticket ticket = insertTicket("WAITING_CUSTOMER", reporterA.getId(), engineerA.getId(), teamA.getId());
-    ticketMapper.update(null, Wrappers.<Ticket>lambdaUpdate()
-        .eq(Ticket::getId, ticket.getId())
-        .set(Ticket::getPausedAt, LocalDateTime.now().withNano(0).minusHours(1)));
+  @DisplayName("状态：REJECTED 工单取消返回 409")
+  void shouldRejectCancellingRejectedTicket() throws Exception {
+    Ticket ticket = insertTicket("REJECTED", reporterA.getId(), engineerA.getId(), teamA.getId());
 
     mockMvc.perform(post("/tickets/{id}/cancel", ticket.getId())
             .contentType(MediaType.APPLICATION_JSON)
             .content(body(REASON, 0))
             .header("Authorization", bearerOf(reporterA, Role.REPORTER)))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.status").value("CANCELLED"))
-        .andExpect(jsonPath("$.data.sla.paused").value(false));
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value(409))
+        .andExpect(jsonPath("$.message").value("当前状态 REJECTED 不可取消"));
 
-    assertThat(ticketMapper.selectById(ticket.getId()).getPausedAt()).isNull();
+    assertThat(ticketMapper.selectById(ticket.getId()).getStatus()).isEqualTo("REJECTED");
   }
 
   /**

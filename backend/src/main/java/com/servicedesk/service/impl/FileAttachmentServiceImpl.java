@@ -8,12 +8,14 @@ import com.servicedesk.entity.enums.FileBizType;
 import com.servicedesk.entity.enums.Role;
 import com.servicedesk.mapper.TicketAttachmentMapper;
 import com.servicedesk.service.FileAttachmentService;
+import com.servicedesk.service.support.TicketAttachEventWriter;
 import com.servicedesk.storage.FileStorageService;
 import com.servicedesk.storage.StoredFile;
 import com.servicedesk.vo.AttachmentVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -27,8 +29,8 @@ import java.util.Objects;
  *
  * <p>
  * 属于业务实现层。上传链路：校验 → 写 OSS → 写库；写库失败时补偿删除 OSS 对象，
- * 避免产生「文件在、记录不在」的孤儿文件。删除链路：先删 OSS 对象再删库记录，
- * 对象删除幂等，失败可重试。
+ * 避免产生「文件在、记录不在」的孤儿文件。删除链路：先写 ATTACH 事件（仅已关联工单），
+ * 再删 OSS 对象与库记录，三步同一事务；对象删除幂等，失败可重试。
  * </p>
  *
  * <p>
@@ -61,6 +63,9 @@ public class FileAttachmentServiceImpl implements FileAttachmentService {
 
     /** 业务时钟，写入上传时间用，禁止使用系统默认时区。 */
     private final Clock clock;
+
+    /** 附件事件写入器，删除已关联附件时留痕；未关联附件不写时间线。 */
+    private final TicketAttachEventWriter ticketAttachEventWriter;
 
     /**
      * 上传附件：校验白名单与大小后写入 OSS，再落元数据。
@@ -119,6 +124,7 @@ public class FileAttachmentServiceImpl implements FileAttachmentService {
      * @throws BusinessException 不存在或越权抛 404；存储不可用抛 503
      */
     @Override
+    @Transactional(rollbackFor = Exception.class)
     public void delete(Long id) {
         TicketAttachment attachment = attachmentMapper.selectById(id);
         if (attachment == null) {
@@ -134,6 +140,12 @@ public class FileAttachmentServiceImpl implements FileAttachmentService {
             log.warn("删除附件被拒绝：非上传人且非管理员, attachmentId={}, uploaderId={}, operatorId={}, role={}",
                     id, attachment.getUploaderId(), operator.id(), operator.role());
             throw new BusinessException(404, "附件不存在");
+        }
+
+        // 只有已关联工单的附件才进时间线；未关联附件的上传/删除都不该污染工单履历
+        if (attachment.getTicketId() != null) {
+            ticketAttachEventWriter.writeDelete(attachment, operator.id(),
+                    LocalDateTime.now(clock).withNano(0));
         }
 
         fileStorageService.deleteByUrl(attachment.getFileUrl());

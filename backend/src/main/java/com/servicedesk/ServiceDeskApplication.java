@@ -20,7 +20,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
  * <li>{@code @MapperScan}：扫描 Mapper 接口，生成 MyBatis 代理 Bean</li>
  * <li>{@code @ConfigurationPropertiesScan}：注册 JwtProperties / StorageProperties
  * / AiProperties</li>
- * <li>{@code @EnableScheduling}：启用定时任务（SLA 超时扫描、暂停自动恢复、令牌配额）</li>
+ * <li>{@code @EnableScheduling}：启用定时任务（SLA 超时扫描、令牌配额）</li>
  * <li>{@code @EnableAsync}：启用异步任务（知识库解析与索引）</li>
  * </ul>
  */

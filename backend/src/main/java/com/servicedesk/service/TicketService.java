@@ -20,7 +20,8 @@ import com.servicedesk.vo.TicketListItemVO;
  * 评价（T-06）与派单（F-01）：
  * 建单校验客户/设备、生成工单号、按紧急度写两个 deadline、状态置 NEW、回填附件；
  * 详情按数据范围判定可见性；编辑支持字段可选 + 乐观锁，紧急度变化时重算 SLA。
- * 状态迁移（F-02）单独在 {@link TicketTransitionService}，处理记录与时间线查询在后续切片追加。
+ * 状态迁移（F-02）单独在 {@link TicketTransitionService}，处理记录与时间线查询在
+ * {@link TicketCommentService}。
  * </p>
  *
  * <p>

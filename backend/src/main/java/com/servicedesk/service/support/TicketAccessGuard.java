@@ -81,7 +81,8 @@ public class TicketAccessGuard {
      */
     public void assertEditable(Ticket ticket, LoginUser operator) {
         TicketStatus status = TicketStatus.from(ticket.getStatus());
-        if (status == TicketStatus.CLOSED || status == TicketStatus.CANCELLED) {
+        if (status == TicketStatus.CLOSED || status == TicketStatus.REJECTED
+                || status == TicketStatus.CANCELLED) {
             log.warn("编辑被拒绝：工单已结束, ticketId={}, status={}, operatorId={}",
                     ticket.getId(), status, operator.id());
             throw new BusinessException(409, "工单已结束，不能编辑");

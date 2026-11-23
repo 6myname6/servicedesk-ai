@@ -30,6 +30,7 @@ erDiagram
     DEVICE ||--o{ TICKET : "device_id"
     SLA_POLICY ||--o{ TICKET : "sla_policy_id"
     TICKET ||--o{ TICKET_EVENT : "ticket_id"
+    TICKET ||--o{ TICKET_MESSAGE : "ticket_id"
     TICKET ||--o{ TICKET_ATTACHMENT : "ticket_id"
     TICKET ||--o| TICKET_FEEDBACK : "ticket_id"
     KB_ARTICLE ||--o{ KB_CHUNK : "article_id"
@@ -84,6 +85,14 @@ erDiagram
         bigint ticket_id FK
         varchar type
         bigint operator_id FK
+        datetime created_at
+    }
+
+    TICKET_MESSAGE {
+        bigint id PK
+        bigint ticket_id FK
+        bigint sender_id FK
+        text content
         datetime created_at
     }
 
@@ -174,6 +183,7 @@ erDiagram
 | 12 | `agent_step` | Agent 步骤明细 | 10 万级 |
 | 13 | `llm_call` | 模型调用计量 | 百万级（增长最快） |
 | 14 | `ticket_feedback` | 工单回访 | 万级 |
+| 15 | `ticket_message` | 工单私信（一对一会话） | 30 万/年 |
 
 > 除 `kb_chunk` 外均在 MySQL；`kb_chunk` 与 `kb_article` 分属两库，`article_id` 是跨库逻辑外键，不建物理约束，删除文章时按 `article_id` 清理 PG 分块。
 
@@ -191,6 +201,7 @@ erDiagram
 | 设备 → 工单 | 1:N | `ticket.device_id` | 一台设备多张工单（可空） |
 | SLA 策略 → 工单 | 1:N | `ticket.sla_policy_id` | 建单时按优先级匹配 |
 | 工单 → 事件 | 1:N | `ticket_event.ticket_id` | 时间线，追加写 |
+| 工单 → 私信 | 1:N | `ticket_message.ticket_id` | 报修人与被派工程师的一对一对话，不进时间线 |
 | 工单 → 附件 | 1:N | `ticket_attachment.ticket_id` | 图片/文档；上传后未关联工单时 `ticket_id` 为 NULL |
 | 工单 → 回访 | 1:1 | `ticket_feedback.ticket_id` | 一单一评 |
 | 文章 → 分块 | 1:N | `kb_chunk.article_id` | 一篇多块 |
@@ -269,7 +280,7 @@ erDiagram
 | `description` | TEXT | 否 | — | 问题描述 |
 | `category` | VARCHAR(16) | 是 | NULL | 6 类故障分类 |
 | `urgency` | VARCHAR(8) | 是 | NULL | `P0/P1/P2/P3` |
-| `status` | VARCHAR(24) | 否 | `NEW` | 9 状态 |
+| `status` | VARCHAR(24) | 否 | `NEW` | 8 状态，见第 6 节 |
 | `customer_id` | BIGINT | 否 | — | 客户 |
 | `device_id` | BIGINT | 是 | NULL | 设备（可空） |
 | `reporter_id` | BIGINT | 否 | — | 报修人 |
@@ -280,9 +291,9 @@ erDiagram
 | `resolve_deadline` | DATETIME | 是 | NULL | 解决截止 |
 | `first_response_at` | DATETIME | 是 | NULL | 首次响应时间 |
 | `resolved_at` | DATETIME | 是 | NULL | 解决时间 |
-| `closed_at` | DATETIME | 是 | NULL | 关闭时间 |
-| `paused_at` | DATETIME | 是 | NULL | 本次暂停开始时间 |
-| `paused_total_minutes` | INT | 否 | 0 | 累计暂停分钟 |
+| `closed_at` | DATETIME | 是 | NULL | 验收通过时间；`REJECTED` 不写，结论时间以 `REJECT` 事件为准 |
+| `paused_at` | DATETIME | 是 | NULL | 暂停开始时间；暂停机制已移除，列保留但恒为 NULL |
+| `paused_total_minutes` | INT | 否 | 0 | 累计暂停分钟；暂停机制已移除，列保留但恒为 0 |
 | `response_escalated_at` | DATETIME | 是 | NULL | 响应超时升级时间（幂等） |
 | `resolve_escalated_at` | DATETIME | 是 | NULL | 解决超时升级时间（幂等） |
 | `ai_confidence` | DECIMAL(4,3) | 是 | NULL | AI 分类置信度 |
@@ -298,7 +309,7 @@ erDiagram
 | --- | --- | --- | --- | --- |
 | `id` | BIGINT | 否 | AUTO_INCREMENT | 主键 |
 | `ticket_id` | BIGINT | 否 | — | 工单 |
-| `type` | VARCHAR(24) | 否 | — | `CREATE/ASSIGN/ACCEPT/START/WAIT_CUSTOMER/RESUME/COMMENT/RESOLVE/CLOSE/REOPEN/CANCEL/ESCALATE/AI_SUGGEST/ATTACH` |
+| `type` | VARCHAR(24) | 否 | — | `CREATE/UPDATE/ASSIGN/ACCEPT/START/COMMENT/RESOLVE/CLOSE/REJECT/CANCEL/FEEDBACK/ESCALATE/AI_SUGGEST/ATTACH` |
 | `from_status` | VARCHAR(24) | 是 | NULL | 变更前状态 |
 | `to_status` | VARCHAR(24) | 是 | NULL | 变更后状态 |
 | `operator_id` | BIGINT | 是 | NULL | 操作人；系统事件为 NULL |
@@ -427,6 +438,18 @@ erDiagram
 | `comment` | VARCHAR(500) | 是 | NULL | 评价内容 |
 | `created_at` | DATETIME | 否 | CURRENT_TIMESTAMP | 评价时间 |
 
+### 4.15 `ticket_message` 工单私信
+
+| 字段 | 类型 | 可空 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | BIGINT | 否 | AUTO_INCREMENT | 主键 |
+| `ticket_id` | BIGINT | 否 | — | 工单，逻辑外键 `ticket.id`；一单一会话 |
+| `sender_id` | BIGINT | 否 | — | 发送者，逻辑外键 `sys_user.id` |
+| `content` | TEXT | 否 | — | 消息正文，去空白后 1-1000 字 |
+| `created_at` | DATETIME | 否 | CURRENT_TIMESTAMP | 发送时间 |
+
+> 对话双方固定为本单的 `reporter_id` 与 `assignee_id`，不单独建会话表；私信不写 `ticket_event`，时间线只记录工单履历（开发文档 7.23）。
+
 ---
 
 ## 5. 索引设计
@@ -454,6 +477,7 @@ erDiagram
 | `ticket` | `idx_sla_resolve(resolve_deadline, resolved_at)` | 普通 | 解决超时扫描 |
 | `ticket` | `idx_customer(customer_id)` | 普通 | 客户工单 |
 | `ticket_event` | `idx_ticket_created(ticket_id, created_at)` | 普通 | 时间线 |
+| `ticket_message` | `idx_ticket_created(ticket_id, created_at)` | 普通 | 私信按时间倒序分页 |
 | `ticket_attachment` | `idx_ticket(ticket_id)` | 普通 | 附件列表 |
 | `sla_policy` | `uk_priority(priority)` | 唯一 | 优先级唯一 |
 | `kb_article` | `idx_status(status)` | 普通 | 索引状态 |
@@ -476,10 +500,10 @@ erDiagram
 | 枚举 | 值 | 备注 |
 | --- | --- | --- |
 | 角色 | `REPORTER` / `ENGINEER` / `SUPERVISOR` / `ADMIN` | 写死在 `sys_user.role`，不做动态 RBAC |
-| 工单状态 | `NEW` / `ASSIGNED` / `ACCEPTED` / `IN_PROGRESS` / `WAITING_CUSTOMER` / `RESOLVED` / `CLOSED` / `REOPENED` / `CANCELLED` | 终态：`CLOSED` / `CANCELLED` |
+| 工单状态 | `NEW` / `ASSIGNED` / `ACCEPTED` / `IN_PROGRESS` / `RESOLVED` / `CLOSED` / `REJECTED` / `CANCELLED` | 终态：`CLOSED`（已完成）/ `REJECTED`（不通过）/ `CANCELLED`（已取消） |
 | 分类 | `HARDWARE` / `SOFTWARE` / `CONSUMABLE` / `INSTALL` / `COMPLAINT` / `OTHER` | AI 输出 + 人工可改 |
 | 紧急度 | `P0` / `P1` / `P2` / `P3` | 与 `sla_policy.priority` 对应 |
-| 事件类型 | `CREATE` / `ASSIGN` / `ACCEPT` / `START` / `WAIT_CUSTOMER` / `RESUME` / `COMMENT` / `RESOLVE` / `CLOSE` / `REOPEN` / `CANCEL` / `ESCALATE` / `AI_SUGGEST` / `ATTACH` | 时间线 |
+| 事件类型 | `CREATE` / `UPDATE` / `ASSIGN` / `ACCEPT` / `START` / `COMMENT` / `RESOLVE` / `CLOSE` / `REJECT` / `CANCEL` / `FEEDBACK` / `ESCALATE` / `AI_SUGGEST` / `ATTACH` | 时间线 |
 | 知识库状态 | `PENDING` / `PARSING` / `INDEXING` / `READY` / `FAILED` | 入库状态机 |
 | Agent 状态 | `RUNNING` / `SUCCESS` / `FAILED` / `NEED_CONFIRM` | 运行 |
 | Agent 步骤类型 | `LLM` / `TOOL` | 轨迹 |
@@ -494,6 +518,7 @@ erDiagram
 | --- | --- | --- | --- |
 | `ticket` | 10 万 | 每单一条 | 按年归档；终态不删 |
 | `ticket_event` | 50 万 | 每单 3-8 条 | 按月分区（后续） |
+| `ticket_message` | 30 万 | 每单 0-20 条私信 | 随工单归档 |
 | `llm_call` | 100 万+ | 每次模型调用 | 按月归档/汇总；保留 6 个月明细 |
 | `kb_chunk`（PG） | 5 万以内 | 知识文章 | 向量检索由 pgvector HNSW 承担；超百万再考虑专用向量库 |
 | `agent_step` | 10 万 | 每次 Agent 3-8 步 | 与 run 一起归档 |

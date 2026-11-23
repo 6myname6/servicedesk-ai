@@ -6,6 +6,7 @@ import com.servicedesk.common.exception.BusinessException;
 import com.servicedesk.entity.TicketAttachment;
 import com.servicedesk.mapper.TicketAttachmentMapper;
 import com.servicedesk.service.impl.FileAttachmentServiceImpl;
+import com.servicedesk.service.support.TicketAttachEventWriter;
 import com.servicedesk.storage.FileStorageService;
 import com.servicedesk.storage.StoredFile;
 import com.servicedesk.vo.AttachmentVO;
@@ -68,6 +69,10 @@ class FileAttachmentServiceImplTest {
   @Mock
   private FileStorageService fileStorageService;
 
+  /** 附件事件写入器替身；本类用例的附件都未关联工单，删除时不应被调用。 */
+  @Mock
+  private TicketAttachEventWriter ticketAttachEventWriter;
+
   /** 被测服务。 */
   private FileAttachmentServiceImpl service;
 
@@ -76,7 +81,8 @@ class FileAttachmentServiceImplTest {
    */
   @BeforeEach
   void setUp() {
-    service = new FileAttachmentServiceImpl(attachmentMapper, fileStorageService, FIXED_CLOCK);
+    service = new FileAttachmentServiceImpl(attachmentMapper, fileStorageService, FIXED_CLOCK,
+        ticketAttachEventWriter);
     UserContext.set(new LoginUser(CURRENT_USER_ID, "ut_reporter", "报修人", "REPORTER", null));
   }
 

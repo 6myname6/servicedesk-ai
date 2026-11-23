@@ -46,7 +46,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>
  * 属于接口层测试：启动完整上下文，走真实拦截器、MySQL 与乐观锁，数据由用例自建并依赖
  * {@code @Transactional} 回滚。重点守住五件事：角色（403）、工单数据范围（404）、
- * 状态机（仅 NEW / REOPENED，其余 409）、被派人的四项校验（400）、
+ * 状态机（仅 NEW，其余 409）、被派人的四项校验（400）、
  * 派单后团队随工程师更新且时间线可见。
  * </p>
  */
@@ -210,29 +210,6 @@ class TicketAssignControllerTest {
   }
 
   /**
-   * REOPENED 工单可以重新派单。
-   *
-   * @throws Exception MockMvc 调用异常
-   */
-  @Test
-  @DisplayName("派单：REOPENED 工单可重新指派")
-  void shouldReassignReopenedTicket() throws Exception {
-    Ticket ticket = insertTicket("REOPENED", reporter.getId(), engineerA.getId(), teamA.getId());
-
-    mockMvc.perform(post("/tickets/{id}/assign", ticket.getId())
-            .contentType(MediaType.APPLICATION_JSON)
-            .content(body(engineerA.getId(), 0))
-            .header("Authorization", bearerOf(supervisorA, Role.SUPERVISOR)))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.status").value("ASSIGNED"));
-
-    TicketEvent event = ticketEventMapper.selectOne(Wrappers.<TicketEvent>lambdaQuery()
-        .eq(TicketEvent::getTicketId, ticket.getId()));
-    assertThat(event.getFromStatus()).isEqualTo("REOPENED");
-    assertThat(event.getToStatus()).isEqualTo("ASSIGNED");
-  }
-
-  /**
    * 主管管理多个团队时，可以改派给另一个团队的工程师，团队随之更新。
    *
    * @throws Exception MockMvc 调用异常
@@ -240,7 +217,7 @@ class TicketAssignControllerTest {
   @Test
   @DisplayName("派单：多团队主管改派后工单团队随工程师更新")
   void shouldUpdateTeamWhenSupervisorReassignsAcrossOwnTeams() throws Exception {
-    Ticket ticket = insertTicket("REOPENED", reporter.getId(), engineerA.getId(), teamA.getId());
+    Ticket ticket = insertTicket("NEW", reporter.getId(), engineerA.getId(), teamA.getId());
 
     mockMvc.perform(post("/tickets/{id}/assign", ticket.getId())
             .contentType(MediaType.APPLICATION_JSON)
@@ -318,7 +295,7 @@ class TicketAssignControllerTest {
   }
 
   /**
-   * 只有 NEW / REOPENED 可以派单。
+   * 只有 NEW 可以派单。
    *
    * @throws Exception MockMvc 调用异常
    */
@@ -397,7 +374,7 @@ class TicketAssignControllerTest {
   @Test
   @DisplayName("数据范围：主管派其他团队工单返回 404")
   void shouldReturn404WhenAssigningOtherTeamTicket() throws Exception {
-    Ticket ticket = insertTicket("REOPENED", reporter.getId(), engineerC.getId(), teamC.getId());
+    Ticket ticket = insertTicket("NEW", reporter.getId(), engineerC.getId(), teamC.getId());
 
     mockMvc.perform(post("/tickets/{id}/assign", ticket.getId())
             .contentType(MediaType.APPLICATION_JSON)
@@ -415,7 +392,7 @@ class TicketAssignControllerTest {
   @Test
   @DisplayName("派单：管理员可跨团队派单")
   void shouldAllowAdminAssignAcrossTeams() throws Exception {
-    Ticket ticket = insertTicket("REOPENED", reporter.getId(), engineerC.getId(), teamC.getId());
+    Ticket ticket = insertTicket("NEW", reporter.getId(), engineerC.getId(), teamC.getId());
 
     mockMvc.perform(post("/tickets/{id}/assign", ticket.getId())
             .contentType(MediaType.APPLICATION_JSON)

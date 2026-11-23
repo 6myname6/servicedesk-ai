@@ -4,6 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.servicedesk.common.api.PageResult;
 import com.servicedesk.common.context.LoginUser;
 import com.servicedesk.common.context.UserContext;
@@ -38,6 +41,7 @@ import com.servicedesk.mapper.TicketMapper;
 import com.servicedesk.service.TicketService;
 import com.servicedesk.service.support.TicketAccessGuard;
 import com.servicedesk.service.support.TicketAssembler;
+import com.servicedesk.service.support.TicketAttachEventWriter;
 import com.servicedesk.service.support.TicketAttachmentLinker;
 import com.servicedesk.service.support.TicketNoGenerator;
 import com.servicedesk.service.support.TicketScopeResolver;
@@ -53,6 +57,7 @@ import org.springframework.util.StringUtils;
 
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -60,7 +65,7 @@ import java.util.Objects;
  * 工单服务实现（建单 T-01、列表 T-02、详情 T-03、编辑 T-04、取消 T-05、评价 T-06、派单 F-01）。
  *
  * <p>
- * 状态迁移（F-02）不在这里：七个流转动作的角色、时间戳与 SLA 副作用集中在
+ * 状态迁移（F-02）不在这里：五个流转动作的角色与时间戳副作用集中在
  * {@code TicketTransitionServiceImpl}，本类只保留建单 / 查询 / 编辑 / 取消 / 评价 / 派单，
  * 避免继续膨胀（编码规范 7.1）。
  * </p>
@@ -71,7 +76,7 @@ import java.util.Objects;
  * <ol>
  * <li>校验客户、设备归属、分类/紧急度取值与附件可用性——全部在写库前完成；</li>
  * <li>按紧急度匹配启用中的 SLA 策略，用同一基准时刻算出两个 deadline；</li>
- * <li>生成工单号并插入工单（`NEW`、暂停 0 分钟、AI 字段留空）；</li>
+ * <li>生成工单号并插入工单（`NEW`、AI 字段留空）；</li>
  * <li>把已上传附件的 {@code ticket_id} 回填为本工单。</li>
  * </ol>
  *
@@ -84,7 +89,7 @@ import java.util.Objects;
  * 详情与编辑共用
  * {@link TicketAssembler#assembleDetail(Ticket, LocalDateTime)}：建单、详情、编辑
  * 三个出口返回同一个 A.8 结构，任何一处新增字段都只改装配器。读路径的时间基准统一由调用方传入，
- * 暂停中改用 {@code paused_at}，保证列表与详情的倒计时口径一致。
+ * RC-001 后不再有暂停口径，列表与详情都按当前时刻计算倒计时。
  * </p>
  *
  * <p>
@@ -144,6 +149,12 @@ public class TicketServiceImpl implements TicketService {
     /** 附件关联器，负责校验与回填 {@code ticket_id}。 */
     private final TicketAttachmentLinker ticketAttachmentLinker;
 
+    /** JSON 工具，把编辑变更的字段名写进事件 metadata；不解析业务正文。 */
+    private final ObjectMapper objectMapper;
+
+    /** 附件事件写入器，建单挂附件时统一写 ATTACH，避免与删除路径各拼一套 metadata。 */
+    private final TicketAttachEventWriter ticketAttachEventWriter;
+
     /**
      * 创建工单。
      *
@@ -173,8 +184,11 @@ public class TicketServiceImpl implements TicketService {
         Ticket ticket = buildTicket(request, customer, device, category, urgency, policy,
                 operator.id(), now, responseDeadline, resolveDeadline);
         insertWithUniqueTicketNo(ticket);
-        // 回填与插入同事务：附件被并发抢占时抛 409，连工单一起回滚
+        // 建单事件先于附件事件：同一秒内先有 CREATE，再按挂载顺序追加 ATTACH
+        ticketEventMapper.insert(buildCreateEvent(ticket.getId(), operator.id(), now));
+        // 回填与插入同事务：附件被并发抢占时抛 409，连工单与事件一起回滚
         ticketAttachmentLinker.linkAttachments(attachments, ticket.getId(), operator.id());
+        ticketAttachEventWriter.writeUploads(attachments, operator.id(), now);
 
         // 重新查一次拿数据库生成的 version / updated_at，避免响应里出现 null
         Ticket saved = ticketMapper.selectById(ticket.getId());
@@ -266,8 +280,10 @@ public class TicketServiceImpl implements TicketService {
                     id, operator.id(), request.getVersion());
             throw new BusinessException(409, TicketAccessGuard.MSG_VERSION_CONFLICT);
         }
-        log.info("编辑工单成功, ticketId={}, operatorId={}, urgencyChanged={}, version={}",
-                id, operator.id(), changes.urgencyChanged(), ticket.getVersion());
+        // 有变更才写事件：空更新在上一分支已返回，时间线不应出现「什么都没改」的记录
+        ticketEventMapper.insert(buildUpdateEvent(ticket.getId(), changes.fields(), operator.id(), now));
+        log.info("编辑工单成功, ticketId={}, operatorId={}, fields={}, urgencyChanged={}, version={}",
+                id, operator.id(), changes.fields(), changes.urgencyChanged(), ticket.getVersion());
         return ticketAssembler.assembleDetail(ticketMapper.selectById(id), now);
     }
 
@@ -293,9 +309,10 @@ public class TicketServiceImpl implements TicketService {
         ticketAccessGuard.assertVersionMatches(ticket, request.getVersion(), operator);
 
         TicketStatus status = TicketStatus.from(ticket.getStatus());
-        // RESOLVED 不是终态却不可取消（只能验收或重开），所以不能只判 CLOSED / CANCELLED
+        // RESOLVED 等待验收不可取消；三个终态同样没有出边，所以不能只判终态
         if (status == TicketStatus.RESOLVED
                 || status == TicketStatus.CLOSED
+                || status == TicketStatus.REJECTED
                 || status == TicketStatus.CANCELLED) {
             log.warn("取消被拒绝：当前状态不可取消, ticketId={}, status={}, operatorId={}",
                     id, status, operator.id());
@@ -306,20 +323,11 @@ public class TicketServiceImpl implements TicketService {
         String fromStatus = ticket.getStatus();
         LocalDateTime now = LocalDateTime.now(clock).withNano(0);
 
-        boolean wasPaused = ticket.getPausedAt() != null;
         ticket.setStatus(TicketStatus.CANCELLED.name());
-        // 取消是终态，暂停随之失效：不清空会让详情显示「暂停中」却永远不会恢复
-        ticket.setPausedAt(null);
         if (ticketMapper.updateById(ticket) == 0) {
             log.warn("取消工单版本冲突, ticketId={}, operatorId={}, requestVersion={}",
                     id, operator.id(), request.getVersion());
             throw new BusinessException(409, TicketAccessGuard.MSG_VERSION_CONFLICT);
-        }
-        if (wasPaused) {
-            // updateById 会跳过 null 字段，暂停标记必须显式 set 才能落库（编码规范 4.2）
-            ticketMapper.update(null, Wrappers.<Ticket>lambdaUpdate()
-                    .eq(Ticket::getId, id)
-                    .set(Ticket::getPausedAt, null));
         }
         ticketEventMapper.insert(buildCancelEvent(ticket.getId(), fromStatus, reason, operator.id(), now));
 
@@ -368,6 +376,8 @@ public class TicketServiceImpl implements TicketService {
             log.warn("评价并发重复提交, ticketId={}, operatorId={}", id, operator.id());
             throw new BusinessException(409, "该工单已评价");
         }
+        // 评价正文只存 ticket_feedback，事件只留分数，避免同一段文字双写后口径不一致
+        ticketEventMapper.insert(buildFeedbackEvent(id, feedback.getScore(), operator.id(), now));
 
         log.info("工单评价成功, ticketId={}, feedbackId={}, score={}, operatorId={}",
                 id, feedback.getId(), feedback.getScore(), operator.id());
@@ -375,7 +385,7 @@ public class TicketServiceImpl implements TicketService {
     }
 
     /**
-     * 派单：把 NEW / REOPENED 工单指派给本团队工程师。
+     * 派单：把 NEW 工单指派给本团队工程师。
      *
      * <p>
      * 判定顺序固定：可见性 404 → 版本 409 → 状态 409 → 工程师 400。
@@ -404,7 +414,7 @@ public class TicketServiceImpl implements TicketService {
         ticketAccessGuard.assertVersionMatches(ticket, request.getVersion(), operator);
 
         TicketStatus status = TicketStatus.from(ticket.getStatus());
-        if (status != TicketStatus.NEW && status != TicketStatus.REOPENED) {
+        if (status != TicketStatus.NEW) {
             log.warn("派单被拒绝：当前状态不可派单, ticketId={}, status={}, operatorId={}",
                     id, status, operator.id());
             throw new BusinessException(409, "当前状态 " + status.name() + " 不可派单");
@@ -606,6 +616,87 @@ public class TicketServiceImpl implements TicketService {
     }
 
     /**
+     * 构造建单事件，用于时间线。
+     *
+     * <p>
+     * 从「无」到 {@code NEW}，所以只有 {@code toStatus}，没有 {@code fromStatus}；
+     * 正文留空，工单标题与描述已经在工单详情里。
+     * </p>
+     *
+     * @param ticketId   工单 ID
+     * @param operatorId 报修人 ID
+     * @param now        建单时刻
+     * @return 待插入的事件实体
+     */
+    private TicketEvent buildCreateEvent(Long ticketId, Long operatorId, LocalDateTime now) {
+        TicketEvent event = new TicketEvent();
+        event.setTicketId(ticketId);
+        event.setType(TicketEventType.CREATE.name());
+        event.setToStatus(TicketStatus.NEW.name());
+        event.setOperatorId(operatorId);
+        event.setCreatedAt(now);
+        return event;
+    }
+
+    /**
+     * 构造评价事件，用于时间线。
+     *
+     * <p>
+     * 只把分数写进 {@code metadata.score}，评价正文仍只存 {@code ticket_feedback}：
+     * 同一段文字双写后，修改或统计口径一旦不一致就无法判断哪份为准。
+     * </p>
+     *
+     * @param ticketId   工单 ID
+     * @param score      评分，1-5
+     * @param operatorId 报修人 ID
+     * @param now        评价时刻
+     * @return 待插入的事件实体
+     */
+    private TicketEvent buildFeedbackEvent(Long ticketId, Integer score, Long operatorId,
+            LocalDateTime now) {
+        TicketEvent event = new TicketEvent();
+        event.setTicketId(ticketId);
+        event.setType(TicketEventType.FEEDBACK.name());
+        event.setOperatorId(operatorId);
+        ObjectNode metadata = objectMapper.createObjectNode();
+        metadata.put("score", score);
+        event.setMetadata(metadata.toString());
+        event.setCreatedAt(now);
+        return event;
+    }
+
+    /**
+     * 构造编辑事件，用于时间线。
+     *
+     * <p>
+     * 只记录实际变更的字段名，不记录旧值与新值：旧描述可能包含客户现场细节，
+     * 新值在工单详情里能直接读到，事件只回答「谁在什么时候改了哪几个字段」。
+     * 字段名与接口入参保持一致，前端可直接据此渲染。
+     * </p>
+     *
+     * @param ticketId   工单 ID
+     * @param fields     实际变更的字段名，至少一个
+     * @param operatorId 操作人 ID
+     * @param now        发生时间
+     * @return 待插入的事件实体
+     */
+    private TicketEvent buildUpdateEvent(Long ticketId, List<String> fields, Long operatorId,
+            LocalDateTime now) {
+        TicketEvent event = new TicketEvent();
+        event.setTicketId(ticketId);
+        event.setType(TicketEventType.UPDATE.name());
+        event.setOperatorId(operatorId);
+        // 正文给人读，metadata 给前端做结构化展示；两者都不含旧值
+        event.setContent("修改字段：" + String.join("、", fields));
+        ObjectNode metadata = objectMapper.createObjectNode();
+        ArrayNode fieldsNode = metadata.putArray("fields");
+        fields.forEach(fieldsNode::add);
+        event.setMetadata(metadata.toString());
+        event.setCreatedAt(now);
+        return event;
+    }
+
+    /**
      * 评价实体转视图。
      *
      * @param feedback 评价实体
@@ -741,7 +832,6 @@ public class TicketServiceImpl implements TicketService {
         ticket.setSlaPolicyId(policy.getId());
         ticket.setResponseDeadline(responseDeadline);
         ticket.setResolveDeadline(resolveDeadline);
-        ticket.setPausedTotalMinutes(0);
         ticket.setAiCorrected(0);
         ticket.setCreatedAt(now);
         return ticket;
@@ -853,6 +943,7 @@ public class TicketServiceImpl implements TicketService {
     private EditChanges applyChanges(Ticket ticket, TicketUpdateRequest request, Long operatorId) {
         boolean dirty = false;
         boolean urgencyChanged = false;
+        List<String> fields = new ArrayList<>();
 
         if (request.getTitle() != null) {
             String title = request.getTitle().trim();
@@ -864,6 +955,7 @@ public class TicketServiceImpl implements TicketService {
             if (!title.equals(ticket.getTitle())) {
                 ticket.setTitle(title);
                 dirty = true;
+                fields.add("title");
             }
         }
         if (request.getDescription() != null) {
@@ -876,6 +968,7 @@ public class TicketServiceImpl implements TicketService {
             if (!description.equals(ticket.getDescription())) {
                 ticket.setDescription(description);
                 dirty = true;
+                fields.add("description");
             }
         }
         if (StringUtils.hasText(request.getCategory())) {
@@ -883,6 +976,7 @@ public class TicketServiceImpl implements TicketService {
             if (!category.equals(ticket.getCategory())) {
                 ticket.setCategory(category);
                 dirty = true;
+                fields.add("category");
             }
         }
         if (StringUtils.hasText(request.getUrgency())) {
@@ -891,6 +985,7 @@ public class TicketServiceImpl implements TicketService {
                 ticket.setUrgency(urgency.name());
                 urgencyChanged = true;
                 dirty = true;
+                fields.add("urgency");
             }
         }
         if (request.getDeviceId() != null) {
@@ -898,17 +993,17 @@ public class TicketServiceImpl implements TicketService {
             if (!Objects.equals(device.getId(), ticket.getDeviceId())) {
                 ticket.setDeviceId(device.getId());
                 dirty = true;
+                fields.add("deviceId");
             }
         }
-        return new EditChanges(dirty, urgencyChanged);
+        return new EditChanges(dirty, urgencyChanged, List.copyOf(fields));
     }
 
     /**
      * 按新紧急度重算 SLA：换策略、以本次请求时刻为基准重写两个 deadline。
      *
      * <p>
-     * 暂停中把 {@code paused_at} 平移到 now：从 now 起算等于把「now 之前的暂停」作废，
-     * 若不平移，恢复时还会再补一次那段时间，造成重复补时。
+     * RC-001 后没有暂停状态，deadline 一律从本次请求时刻重新起算，不再做暂停平移。
      * </p>
      *
      * @param ticket 工单实体
@@ -919,9 +1014,6 @@ public class TicketServiceImpl implements TicketService {
         ticket.setSlaPolicyId(policy.getId());
         ticket.setResponseDeadline(now.plusMinutes(policy.getResponseMinutes()));
         ticket.setResolveDeadline(now.plusMinutes(policy.getResolveMinutes()));
-        if (ticket.getPausedAt() != null) {
-            ticket.setPausedAt(now);
-        }
         log.info("编辑紧急度重算 SLA, ticketId={}, policyId={}, responseDeadline={}, resolveDeadline={}",
                 ticket.getId(), policy.getId(), ticket.getResponseDeadline(), ticket.getResolveDeadline());
     }
@@ -931,7 +1023,8 @@ public class TicketServiceImpl implements TicketService {
      *
      * @param dirty          是否有任何字段真的发生变化
      * @param urgencyChanged 紧急度是否变化，只有变化时才重算 SLA
+     * @param fields         实际变更的字段名，按请求字段命名，供 UPDATE 事件的 metadata 使用
      */
-    private record EditChanges(boolean dirty, boolean urgencyChanged) {
+    private record EditChanges(boolean dirty, boolean urgencyChanged, List<String> fields) {
     }
 }

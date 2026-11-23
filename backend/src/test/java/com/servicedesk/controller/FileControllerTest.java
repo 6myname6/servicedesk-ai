@@ -1,13 +1,16 @@
 package com.servicedesk.controller;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.servicedesk.common.context.LoginUser;
 import com.servicedesk.common.exception.BusinessException;
 import com.servicedesk.entity.SysUser;
 import com.servicedesk.entity.TicketAttachment;
+import com.servicedesk.entity.TicketEvent;
 import com.servicedesk.entity.enums.Role;
 import com.servicedesk.mapper.SysUserMapper;
 import com.servicedesk.mapper.TicketAttachmentMapper;
+import com.servicedesk.mapper.TicketEventMapper;
 import com.servicedesk.security.JwtUtil;
 import com.servicedesk.storage.FileStorageService;
 import com.servicedesk.storage.StoredFile;
@@ -100,6 +103,14 @@ class FileControllerTest {
   /** 本次用例的另一个报修人，用于越权断言。 */
   private SysUser other;
 
+  /** 工单事件 Mapper，用于断言未关联附件的上传/删除不写时间线。 */
+  @Autowired
+  private TicketEventMapper ticketEventMapper;
+
+  /** JSON 工具，用于解析 ATTACH 事件的 metadata。 */
+  @Autowired
+  private ObjectMapper objectMapper;
+
   /** 本次用例的管理员，可删除任意附件。 */
   private SysUser admin;
 
@@ -147,6 +158,8 @@ class FileControllerTest {
     assertThat(record.getFileUrl()).isEqualTo(STORED_URL);
     assertThat(record.getFileSize()).isEqualTo(5L);
     verify(fileStorageService).upload(eq("ticket"), eq("photo.jpg"), eq("image/jpeg"), aryEq(content));
+    // 上传但未关联工单：不写时间线，避免附件桶污染工单履历
+    assertThat(eventCountByOperator(uploader.getId())).isZero();
   }
 
   /**
@@ -281,6 +294,36 @@ class FileControllerTest {
 
     assertThat(attachmentMapper.selectById(attachment.getId())).isNull();
     verify(fileStorageService).deleteByUrl(STORED_URL);
+    // 未关联附件没有工单可挂事件
+    assertThat(eventCountByOperator(uploader.getId())).isZero();
+  }
+
+  /**
+   * 删除已关联工单的附件：写 ATTACH delete 事件，metadata 带动作、附件 ID 与文件名。
+   *
+   * @throws Exception MockMvc 调用异常
+   */
+  @Test
+  @DisplayName("删除：已关联附件写 ATTACH delete 事件")
+  void shouldWriteAttachDeleteEvent() throws Exception {
+    long fakeTicketId = 9_000_000_000L + (System.nanoTime() & 0xFFFFFF);
+    TicketAttachment attachment = insertAttachment(uploader.getId(), fakeTicketId);
+
+    mockMvc.perform(delete("/files/{id}", attachment.getId())
+            .header("Authorization", bearerOf(uploader.getId(), Role.REPORTER)))
+        .andExpect(status().isOk());
+
+    List<TicketEvent> events = ticketEventMapper.selectList(Wrappers.<TicketEvent>lambdaQuery()
+        .eq(TicketEvent::getTicketId, fakeTicketId));
+    assertThat(events).hasSize(1);
+    TicketEvent event = events.get(0);
+    assertThat(event.getType()).isEqualTo("ATTACH");
+    assertThat(event.getOperatorId()).isEqualTo(uploader.getId());
+    assertThat(objectMapper.readTree(event.getMetadata()).path("action").asText()).isEqualTo("delete");
+    assertThat(objectMapper.readTree(event.getMetadata()).path("attachmentId").asLong())
+        .isEqualTo(attachment.getId());
+    assertThat(objectMapper.readTree(event.getMetadata()).path("fileName").asText())
+        .isEqualTo("photo.jpg");
   }
 
   /**
@@ -368,13 +411,36 @@ class FileControllerTest {
   }
 
   /**
-   * 直接插入一条附件记录，绕过接口，用于删除用例造数。
+   * 统计指定操作人产生的时间线事件条数。
+   *
+   * @param operatorId 操作人 ID
+   * @return 事件条数
+   */
+  private long eventCountByOperator(Long operatorId) {
+    return ticketEventMapper.selectCount(Wrappers.<TicketEvent>lambdaQuery()
+        .eq(TicketEvent::getOperatorId, operatorId));
+  }
+
+  /**
+   * 直接插入一条未关联工单的附件记录，绕过接口，用于删除用例造数。
    *
    * @param uploaderId 上传人 ID
    * @return 插入后的附件实体（含自增 ID）
    */
   private TicketAttachment insertAttachment(Long uploaderId) {
+    return insertAttachment(uploaderId, null);
+  }
+
+  /**
+   * 直接插入一条附件记录，可指定已关联工单。
+   *
+   * @param uploaderId 上传人 ID
+   * @param ticketId   关联工单 ID，未关联时为 null
+   * @return 插入后的附件实体（含自增 ID）
+   */
+  private TicketAttachment insertAttachment(Long uploaderId, Long ticketId) {
     TicketAttachment attachment = new TicketAttachment();
+    attachment.setTicketId(ticketId);
     attachment.setUploaderId(uploaderId);
     attachment.setFileName("photo.jpg");
     attachment.setFileUrl(STORED_URL);

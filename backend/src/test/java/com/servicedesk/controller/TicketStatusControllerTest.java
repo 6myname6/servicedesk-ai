@@ -32,7 +32,6 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -48,8 +47,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>
  * 属于接口层测试：启动完整上下文，走真实拦截器、MySQL 与乐观锁，数据由用例自建并依赖
- * {@code @Transactional} 回滚。重点守住六件事：七个动作的时间戳副作用、SLA 暂停与补时、
- * 非法迁移与终态（409）、角色不符（403）、数据范围（404）、版本冲突（409）与参数校验（400）。
+ * {@code @Transactional} 回滚。重点守住六件事：五个动作的时间戳副作用、
+ * 非法迁移与三个终态（409）、角色不符（403）、数据范围（404）、版本冲突（409）与参数校验（400）。
  * </p>
  */
 @SpringBootTest
@@ -236,69 +235,6 @@ class TicketStatusControllerTest {
   }
 
   /**
-   * 开始处理也可以从 REOPENED 进入。
-   *
-   * @throws Exception MockMvc 调用异常
-   */
-  @Test
-  @DisplayName("开始处理：REOPENED 转 IN_PROGRESS")
-  void shouldStartProcessingFromReopened() throws Exception {
-    Ticket ticket = insertTicket("REOPENED", reporter.getId(), engineerA.getId(), teamA.getId());
-
-    patchStatus(ticket.getId(), "IN_PROGRESS", 0, null, engineerA, Role.ENGINEER)
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"));
-
-    assertThat(singleEvent(ticket.getId()).getFromStatus()).isEqualTo("REOPENED");
-  }
-
-  /**
-   * 等客户：IN_PROGRESS → WAITING_CUSTOMER，写暂停起点但不移动 deadline。
-   *
-   * @throws Exception MockMvc 调用异常
-   */
-  @Test
-  @DisplayName("等客户：写 paused_at 且两个 deadline 不变")
-  void shouldPauseSlaWhenWaitingCustomer() throws Exception {
-    Ticket ticket = insertTicket("IN_PROGRESS", reporter.getId(), engineerA.getId(), teamA.getId());
-
-    patchStatus(ticket.getId(), "WAITING_CUSTOMER", 0, null, engineerA, Role.ENGINEER)
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.status").value("WAITING_CUSTOMER"));
-
-    Ticket saved = ticketMapper.selectById(ticket.getId());
-    assertThat(saved.getPausedAt()).isNotNull();
-    assertThat(saved.getPausedTotalMinutes()).isZero();
-    assertThat(saved.getResponseDeadline()).isEqualTo(ticket.getResponseDeadline());
-    assertThat(saved.getResolveDeadline()).isEqualTo(ticket.getResolveDeadline());
-    assertThat(singleEvent(ticket.getId()).getType()).isEqualTo("WAIT_CUSTOMER");
-  }
-
-  /**
-   * 客户回复：暂停 2 小时后恢复，累计暂停与两个 deadline 同步补回 2 小时。
-   *
-   * @throws Exception MockMvc 调用异常
-   */
-  @Test
-  @DisplayName("客户回复：补回 2 小时暂停时长并清空 paused_at")
-  void shouldShiftDeadlinesWhenResuming() throws Exception {
-    LocalDateTime pausedAt = LocalDateTime.now().withNano(0).minusHours(2);
-    Ticket ticket = insertTicket("WAITING_CUSTOMER", reporter.getId(), engineerA.getId(),
-        teamA.getId(), pausedAt, null, null);
-
-    patchStatus(ticket.getId(), "IN_PROGRESS", 0, null, engineerA, Role.ENGINEER)
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"));
-
-    Ticket saved = ticketMapper.selectById(ticket.getId());
-    assertThat(saved.getPausedAt()).isNull();
-    assertThat(saved.getPausedTotalMinutes()).isEqualTo(120);
-    assertThat(saved.getResponseDeadline()).isEqualTo(ticket.getResponseDeadline().plusMinutes(120));
-    assertThat(saved.getResolveDeadline()).isEqualTo(ticket.getResolveDeadline().plusMinutes(120));
-    assertThat(singleEvent(ticket.getId()).getType()).isEqualTo("RESUME");
-  }
-
-  /**
    * 解决：IN_PROGRESS → RESOLVED，写解决时间。
    *
    * @throws Exception MockMvc 调用异常
@@ -354,35 +290,28 @@ class TicketStatusControllerTest {
   }
 
   /**
-   * 重开：主管重开本团队的已解决工单，清空解决时间与升级标记并重算解决 deadline。
+   * 验收不通过：RESOLVED → REJECTED，终态但不写 closed_at。
    *
    * @throws Exception MockMvc 调用异常
    */
   @Test
-  @DisplayName("重开：清空 resolved_at / 升级标记并重算 resolve_deadline")
-  void shouldReopenResolvedTicket() throws Exception {
-    LocalDateTime now = LocalDateTime.now().withNano(0);
-    Ticket ticket = insertTicket("RESOLVED", reporter.getId(), engineerA.getId(), teamA.getId(),
-        null, null, now.minusHours(1));
-    ticketMapper.update(null, Wrappers.<Ticket>lambdaUpdate()
-        .eq(Ticket::getId, ticket.getId())
-        .set(Ticket::getResolvedAt, now.minusHours(2)));
+  @DisplayName("验收不通过：进入 REJECTED 且不写 closed_at")
+  void shouldRejectResolvedTicket() throws Exception {
+    Ticket ticket = insertTicket("RESOLVED", reporter.getId(), engineerA.getId(), teamA.getId());
 
-    LocalDateTime before = LocalDateTime.now().withNano(0);
-    patchStatus(ticket.getId(), "REOPENED", 0, "问题复现", supervisorA, Role.SUPERVISOR)
+    patchStatus(ticket.getId(), "REJECTED", 0, "问题复现", supervisorA, Role.SUPERVISOR)
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.status").value("REOPENED"));
+        .andExpect(jsonPath("$.data.status").value("REJECTED"))
+        .andExpect(jsonPath("$.data.closedAt").doesNotExist());
 
     Ticket saved = ticketMapper.selectById(ticket.getId());
+    assertThat(saved.getClosedAt()).isNull();
     assertThat(saved.getResolvedAt()).isNull();
-    assertThat(saved.getResolveEscalatedAt()).isNull();
-    assertThat(Duration.between(before, saved.getResolveDeadline()).toMinutes())
-        .isBetween(240L, 241L);
 
     TicketEvent event = singleEvent(ticket.getId());
-    assertThat(event.getType()).isEqualTo("REOPEN");
+    assertThat(event.getType()).isEqualTo("REJECT");
     assertThat(event.getFromStatus()).isEqualTo("RESOLVED");
-    assertThat(event.getToStatus()).isEqualTo("REOPENED");
+    assertThat(event.getToStatus()).isEqualTo("REJECTED");
     assertThat(event.getOperatorId()).isEqualTo(supervisorA.getId());
   }
 
@@ -411,12 +340,17 @@ class TicketStatusControllerTest {
    * @throws Exception MockMvc 调用异常
    */
   @Test
-  @DisplayName("状态机：CLOSED 与 CANCELLED 不可再迁移")
+  @DisplayName("状态机：三个终态都不可再迁移")
   void shouldRejectTransitionFromTerminalStatus() throws Exception {
     Ticket closed = insertTicket("CLOSED", reporter.getId(), engineerA.getId(), teamA.getId());
-    patchStatus(closed.getId(), "REOPENED", 0, null, reporter, Role.REPORTER)
+    patchStatus(closed.getId(), "IN_PROGRESS", 0, null, reporter, Role.REPORTER)
         .andExpect(status().isConflict())
-        .andExpect(jsonPath("$.message").value("当前状态 CLOSED 不可迁移到 REOPENED"));
+        .andExpect(jsonPath("$.message").value("当前状态 CLOSED 不可迁移到 IN_PROGRESS"));
+
+    Ticket rejected = insertTicket("REJECTED", reporter.getId(), engineerA.getId(), teamA.getId());
+    patchStatus(rejected.getId(), "IN_PROGRESS", 0, null, admin, Role.ADMIN)
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.message").value("当前状态 REJECTED 不可迁移到 IN_PROGRESS"));
 
     Ticket cancelled = insertTicket("CANCELLED", reporter.getId(), null, null);
     patchStatus(cancelled.getId(), "IN_PROGRESS", 0, null, admin, Role.ADMIN)
@@ -684,7 +618,7 @@ class TicketStatusControllerTest {
   }
 
   /**
-   * 直接插入一张工单，不设置暂停与时间戳。
+   * 直接插入一张工单，不设置时间戳。
    *
    * @param status     状态
    * @param reporterId 报修人 ID
@@ -697,7 +631,7 @@ class TicketStatusControllerTest {
   }
 
   /**
-   * 直接插入一张工单，并指定暂停起点、首次响应与解决升级标记。
+   * 直接插入一张工单，并指定首次响应与解决升级标记。
    *
    * @param status             状态
    * @param reporterId         报修人 ID

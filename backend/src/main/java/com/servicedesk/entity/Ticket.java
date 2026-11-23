@@ -22,7 +22,7 @@ import java.time.LocalDateTime;
  *
  * <p>
  * 两个 {@code *_deadline} 是建单时按 SLA 策略算出的「绝对时刻」，不是相对时长：
- * 建单写入后不再跟随策略变化，后续暂停/恢复只做平移（S-02）。
+ * 建单写入后不再跟随策略变化，只在编辑紧急度时按新策略重算（RC-001 已移除暂停与补时）。
  * 同理 {@code status} 的 {@code NEW} 由服务端显式写入，数据库默认值只作兜底。
  * </p>
  *
@@ -57,7 +57,7 @@ public class Ticket {
   /** 紧急度：P0 / P1 / P2 / P3；未指定时由业务层写 P2，并决定匹配哪条 SLA 策略。 */
   private String urgency;
 
-  /** 工单状态：9 状态，建单写 {@code NEW}，取值见 {@code docs/ER图.md} 第 6 节。 */
+  /** 工单状态：8 状态，建单写 {@code NEW}，取值见 {@code docs/ER图.md} 第 6 节。 */
   private String status;
 
   /** 客户 ID，必填，逻辑外键 customer.id。 */
@@ -94,11 +94,11 @@ public class Ticket {
   private LocalDateTime closedAt;
 
   /**
-   * 本次暂停开始时间，可空；进入 WAITING_CUSTOMER 时写入，恢复时清空并累加到 {@link #pausedTotalMinutes}。
+   * 历史暂停开始时间，RC-001 后为死列：保留字段兼容旧数据，代码不再写入，读取时忽略。
    */
   private LocalDateTime pausedAt;
 
-  /** 累计暂停分钟数，非空，默认 0；解决截止时间按此顺延。 */
+  /** 历史累计暂停分钟数，RC-001 后为死列：恒为 0，代码不再写入。 */
   private Integer pausedTotalMinutes;
 
   /** 响应超时升级时间，可空；非空表示本类超时已升级过，用于超时扫描幂等。 */

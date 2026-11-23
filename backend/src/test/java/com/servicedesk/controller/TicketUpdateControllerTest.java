@@ -1,6 +1,7 @@
 package com.servicedesk.controller;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.servicedesk.common.context.LoginUser;
 import com.servicedesk.entity.Customer;
@@ -9,6 +10,7 @@ import com.servicedesk.entity.SlaPolicy;
 import com.servicedesk.entity.SysUser;
 import com.servicedesk.entity.Team;
 import com.servicedesk.entity.Ticket;
+import com.servicedesk.entity.TicketEvent;
 import com.servicedesk.entity.enums.DeviceStatus;
 import com.servicedesk.entity.enums.Role;
 import com.servicedesk.mapper.CustomerMapper;
@@ -16,6 +18,7 @@ import com.servicedesk.mapper.DeviceMapper;
 import com.servicedesk.mapper.SlaPolicyMapper;
 import com.servicedesk.mapper.SysUserMapper;
 import com.servicedesk.mapper.TeamMapper;
+import com.servicedesk.mapper.TicketEventMapper;
 import com.servicedesk.mapper.TicketMapper;
 import com.servicedesk.security.JwtUtil;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,6 +35,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,9 +48,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *
  * <p>
  * 属于接口层测试：启动完整上下文，走真实拦截器、MySQL 与 MyBatis-Plus 乐观锁，
- * 数据由用例自建并依赖 {@code @Transactional} 回滚。重点守住五件事：
+ * 数据由用例自建并依赖 {@code @Transactional} 回滚。重点守住六件事：
  * 角色与数据范围的两层拦截（403 / 404）、状态与版本冲突（409）、
- * 字段可选语义（不传保留原值、空更新不写库）、紧急度变化重算 SLA、暂停中平移暂停起点。
+ * 字段可选语义（不传保留原值、空更新不写库）、紧急度变化重算 SLA、
+ * 有变更时写 UPDATE 事件且只记录字段名。
  * </p>
  */
 @SpringBootTest
@@ -72,6 +77,10 @@ class TicketUpdateControllerTest {
   /** 工单 Mapper。 */
   @Autowired
   private TicketMapper ticketMapper;
+
+  /** 工单事件 Mapper，用于断言编辑是否写时间线。 */
+  @Autowired
+  private TicketEventMapper ticketEventMapper;
 
   /** 客户 Mapper。 */
   @Autowired
@@ -243,6 +252,43 @@ class TicketUpdateControllerTest {
     Ticket reloaded = ticketMapper.selectById(ticket.getId());
     assertThat(reloaded.getVersion()).isZero();
     assertThat(reloaded.getUpdatedAt()).isEqualTo(updatedBefore);
+    assertThat(eventCount(ticket.getId())).isZero();
+  }
+
+  /**
+   * 有字段变更时写一条 UPDATE 事件，metadata.fields 只记录实际变更的字段名。
+   *
+   * @throws Exception MockMvc 调用异常
+   */
+  @Test
+  @DisplayName("事件：编辑写 UPDATE 事件并记录变更字段")
+  void shouldWriteUpdateEvent() throws Exception {
+    Ticket ticket = insertTicket("NEW", reporterA.getId(), null, null, p1);
+
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("title", "空压机异响（已补充视频）");
+    body.put("urgency", "P2");
+    body.put("version", 0);
+
+    mockMvc.perform(put("/tickets/{id}", ticket.getId())
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(objectMapper.writeValueAsString(body))
+            .header("Authorization", bearerOf(reporterA, Role.REPORTER)))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.version").value(1));
+
+    TicketEvent event = singleEvent(ticket.getId());
+    assertThat(event.getType()).isEqualTo("UPDATE");
+    assertThat(event.getFromStatus()).isNull();
+    assertThat(event.getToStatus()).isNull();
+    assertThat(event.getOperatorId()).isEqualTo(reporterA.getId());
+    assertThat(event.getContent()).isEqualTo("修改字段：title、urgency");
+
+    List<String> fields = objectMapper.convertValue(
+        objectMapper.readTree(event.getMetadata()).path("fields"),
+        new TypeReference<List<String>>() {
+        });
+    assertThat(fields).containsExactly("title", "urgency");
   }
 
   /**
@@ -271,6 +317,7 @@ class TicketUpdateControllerTest {
         .andExpect(jsonPath("$.message").value("工单已被他人修改，请刷新后重试"));
 
     assertThat(ticketMapper.selectById(ticket.getId()).getTitle()).isEqualTo("空压机运行异响");
+    assertThat(eventCount(ticket.getId())).isZero();
   }
 
   /**
@@ -382,13 +429,20 @@ class TicketUpdateControllerTest {
   @Test
   @DisplayName("状态：终态工单管理员也改不了，返回 409")
   void shouldRejectTerminalTicketForAdmin() throws Exception {
-    Ticket ticket = insertTicket("CLOSED", reporterA.getId(), engineerA.getId(), teamA.getId(), p1);
-
     Map<String, Object> body = new LinkedHashMap<>();
     body.put("title", "关闭后修改");
     body.put("version", 0);
 
-    mockMvc.perform(put("/tickets/{id}", ticket.getId())
+    Ticket closed = insertTicket("CLOSED", reporterA.getId(), engineerA.getId(), teamA.getId(), p1);
+    mockMvc.perform(put("/tickets/{id}", closed.getId())
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(objectMapper.writeValueAsString(body))
+            .header("Authorization", bearerOf(admin, Role.ADMIN)))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.message").value("工单已结束，不能编辑"));
+
+    Ticket rejected = insertTicket("REJECTED", reporterA.getId(), engineerA.getId(), teamA.getId(), p1);
+    mockMvc.perform(put("/tickets/{id}", rejected.getId())
             .contentType(MediaType.APPLICATION_JSON)
             .content(objectMapper.writeValueAsString(body))
             .header("Authorization", bearerOf(admin, Role.ADMIN)))
@@ -450,36 +504,6 @@ class TicketUpdateControllerTest {
     Ticket reloaded = ticketMapper.selectById(ticket.getId());
     assertThat(reloaded.getResponseDeadline()).isEqualTo(responseBefore);
     assertThat(reloaded.getSlaPolicyId()).isEqualTo(p1.getId());
-  }
-
-  /**
-   * 暂停中改紧急度：暂停起点平移到本次请求时刻，累计暂停分钟不变。
-   *
-   * @throws Exception MockMvc 调用异常
-   */
-  @Test
-  @DisplayName("SLA：暂停中重算会把 paused_at 平移到 now")
-  void shouldShiftPausedAtWhenRebasing() throws Exception {
-    Ticket ticket = insertTicket("WAITING_CUSTOMER", reporterA.getId(), engineerA.getId(), teamA.getId(), p1);
-    LocalDateTime pausedAt = LocalDateTime.now().withNano(0).minusHours(2);
-    ticketMapper.update(null, Wrappers.<Ticket>lambdaUpdate()
-        .eq(Ticket::getId, ticket.getId())
-        .set(Ticket::getPausedAt, pausedAt));
-
-    Map<String, Object> body = new LinkedHashMap<>();
-    body.put("urgency", "P2");
-    body.put("version", 0);
-
-    mockMvc.perform(put("/tickets/{id}", ticket.getId())
-            .contentType(MediaType.APPLICATION_JSON)
-            .content(objectMapper.writeValueAsString(body))
-            .header("Authorization", bearerOf(admin, Role.ADMIN)))
-        .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.sla.paused").value(true));
-
-    Ticket reloaded = ticketMapper.selectById(ticket.getId());
-    assertThat(reloaded.getPausedAt()).isAfter(pausedAt);
-    assertThat(reloaded.getPausedTotalMinutes()).isZero();
   }
 
   /**
@@ -546,6 +570,30 @@ class TicketUpdateControllerTest {
             .header("Authorization", bearerOf(reporterA, Role.REPORTER)))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.code").value(400));
+  }
+
+  /**
+   * 取工单唯一的一条时间线事件。
+   *
+   * @param ticketId 工单 ID
+   * @return 事件实体
+   */
+  private TicketEvent singleEvent(Long ticketId) {
+    List<TicketEvent> events = ticketEventMapper.selectList(Wrappers.<TicketEvent>lambdaQuery()
+        .eq(TicketEvent::getTicketId, ticketId));
+    assertThat(events).hasSize(1);
+    return events.get(0);
+  }
+
+  /**
+   * 统计工单的时间线事件条数。
+   *
+   * @param ticketId 工单 ID
+   * @return 事件条数
+   */
+  private long eventCount(Long ticketId) {
+    return ticketEventMapper.selectCount(Wrappers.<TicketEvent>lambdaQuery()
+        .eq(TicketEvent::getTicketId, ticketId));
   }
 
   /**

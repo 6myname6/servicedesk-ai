@@ -88,7 +88,7 @@ INSERT INTO `sla_policy` (`id`, `name`, `priority`, `response_minutes`, `resolve
 
 -- ---------- 6. 工单 200 张 ----------
 -- 时间统一回推 72 小时起、每单间隔 7 小时，避免与当天 Redis 日序列生成的工单号撞号。
--- 状态按 n % 9 轮转，覆盖全部 9 个状态；deadline 按 SLA 策略分钟数计算。
+-- 状态按 n % 8 轮转，覆盖全部 8 个状态；deadline 按 SLA 策略分钟数计算。
 -- 工单号序号段取全局序号 n，只保证唯一，不代表「当日第 n 单」——种子数据不占用 Redis 日序列。
 INSERT INTO `ticket`
     (`id`, `ticket_no`, `title`, `description`, `category`, `urgency`, `status`,
@@ -111,7 +111,7 @@ base AS (
         IF(n % 2 = 0, 8, 7) AS reporter_id,
         ELT(1 + (n % 6), 'HARDWARE', 'SOFTWARE', 'CONSUMABLE', 'INSTALL', 'COMPLAINT', 'OTHER') AS category,
         ELT(1 + (n % 4), 'P0', 'P1', 'P2', 'P3') AS urgency,
-        ELT(1 + (n % 9), 'NEW', 'ASSIGNED', 'ACCEPTED', 'IN_PROGRESS', 'WAITING_CUSTOMER', 'RESOLVED', 'CLOSED', 'REOPENED', 'CANCELLED') AS status,
+        ELT(1 + (n % 8), 'NEW', 'ASSIGNED', 'ACCEPTED', 'IN_PROGRESS', 'RESOLVED', 'CLOSED', 'REJECTED', 'CANCELLED') AS status,
         ELT(1 + (n % 9), '设备无法开机', '运行异响', '系统频繁报错', '耗材更换申请', '新设备安装调试', '账单与合同咨询', '上门维修预约', '软件版本升级', '服务态度投诉') AS subject
     FROM seq
 ),
@@ -119,7 +119,7 @@ calc AS (
     SELECT
         b.*,
         CASE
-            WHEN b.status IN ('NEW', 'REOPENED', 'CANCELLED') THEN NULL
+            WHEN b.status IN ('NEW', 'CANCELLED') THEN NULL
             ELSE 4 + (b.n % 3)
         END AS assignee_id
     FROM base b
@@ -137,22 +137,21 @@ SELECT
     c.reporter_id,
     c.assignee_id,
     CASE
-        WHEN c.status IN ('NEW', 'REOPENED', 'CANCELLED') THEN NULL
+        WHEN c.status IN ('NEW', 'CANCELLED') THEN NULL
         WHEN 4 + (c.n % 3) = 6 THEN 2
         ELSE 1
     END,
     CASE c.urgency WHEN 'P0' THEN 1 WHEN 'P1' THEN 2 WHEN 'P2' THEN 3 ELSE 4 END,
     DATE_ADD(c.created_at, INTERVAL (CASE c.urgency WHEN 'P0' THEN 15 WHEN 'P1' THEN 30 WHEN 'P2' THEN 120 ELSE 480 END) MINUTE),
     DATE_ADD(c.created_at, INTERVAL (CASE c.urgency WHEN 'P0' THEN 120 WHEN 'P1' THEN 240 WHEN 'P2' THEN 480 ELSE 1440 END) MINUTE),
-    CASE WHEN c.status IN ('ASSIGNED', 'ACCEPTED', 'IN_PROGRESS', 'WAITING_CUSTOMER', 'RESOLVED', 'CLOSED')
+    CASE WHEN c.status IN ('ASSIGNED', 'ACCEPTED', 'IN_PROGRESS', 'RESOLVED', 'CLOSED', 'REJECTED')
          THEN DATE_ADD(c.created_at, INTERVAL 20 MINUTE) ELSE NULL END,
-    CASE WHEN c.status IN ('RESOLVED', 'CLOSED')
+    CASE WHEN c.status IN ('RESOLVED', 'CLOSED', 'REJECTED')
          THEN DATE_ADD(c.created_at, INTERVAL 300 MINUTE) ELSE NULL END,
     CASE WHEN c.status = 'CLOSED'
          THEN DATE_ADD(c.created_at, INTERVAL 1800 MINUTE) ELSE NULL END,
-    CASE WHEN c.status = 'WAITING_CUSTOMER'
-         THEN DATE_ADD(c.created_at, INTERVAL 120 MINUTE) ELSE NULL END,
-    CASE WHEN c.status = 'WAITING_CUSTOMER' THEN 60 ELSE 0 END,
+    NULL,
+    0,
     0,
     c.created_at,
     c.created_at

@@ -5,16 +5,16 @@ import com.servicedesk.common.exception.BusinessException;
 import java.util.Locale;
 
 /**
- * 工单状态（9 种）。
+ * 工单状态（8 种），对应开发文档 12.1 与 ER 图第 6 节。
  *
  * <p>
- * 属于枚举字典层。枚举名必须与 {@code ticket.status} 的存储值、ER 图第 6 节字典、
- * 开发文档 7.1 状态机保持一致，禁止使用魔法数字。
+ * 属于枚举字典层。枚举名必须与 {@code ticket.status} 的存储值一致，禁止使用魔法数字。
+ * 建单只写 {@link #NEW}；其余状态由派单（F-01）与状态流转（F-02）维护。
  * </p>
  *
  * <p>
- * 建单只写 {@link #NEW}；其余状态由派单（F-01）与状态流转（F-02）维护。
- * {@link #CLOSED} 与 {@link #CANCELLED} 是终态，不可再迁出。
+ * 终态 3 个：{@link #CLOSED}（已完成）、{@link #REJECTED}（不通过）、{@link #CANCELLED}（已取消），
+ * 不可再迁出。RC-001 已删除「等客户」与「重开」两个状态，客户补充信息改用私信沟通。
  * </p>
  */
 public enum TicketStatus {
@@ -27,19 +27,17 @@ public enum TicketStatus {
     ACCEPTED,
     /** 处理中：工程师已开始处理。 */
     IN_PROGRESS,
-    /** 等待客户：需要客户补充信息，SLA 暂停计时。 */
-    WAITING_CUSTOMER,
     /** 已解决：工程师给出解决方案，等待验收。 */
     RESOLVED,
-    /** 已关闭：报修人验收或系统关闭，终态。 */
+    /** 已完成：报修人验收通过，终态。 */
     CLOSED,
-    /** 已重开：验收不通过或问题复现，重新进入处理。 */
-    REOPENED,
+    /** 不通过：报修人验收不通过，终态；不写 {@code closed_at}，问题复现需新建工单。 */
+    REJECTED,
     /** 已取消：报修人撤回或无效工单，终态。 */
     CANCELLED;
 
     /**
-     * 严格解析状态，用于列表筛选。
+     * 严格解析状态，用于列表筛选与状态迁转入参。
      *
      * <p>
      * 与建单不同，筛选没有「缺省值」语义：传了就必须是合法状态，

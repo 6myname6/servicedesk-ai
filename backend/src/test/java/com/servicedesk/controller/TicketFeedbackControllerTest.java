@@ -9,6 +9,7 @@ import com.servicedesk.entity.SlaPolicy;
 import com.servicedesk.entity.SysUser;
 import com.servicedesk.entity.Team;
 import com.servicedesk.entity.Ticket;
+import com.servicedesk.entity.TicketEvent;
 import com.servicedesk.entity.TicketFeedback;
 import com.servicedesk.entity.enums.DeviceStatus;
 import com.servicedesk.entity.enums.Role;
@@ -17,6 +18,7 @@ import com.servicedesk.mapper.DeviceMapper;
 import com.servicedesk.mapper.SlaPolicyMapper;
 import com.servicedesk.mapper.SysUserMapper;
 import com.servicedesk.mapper.TeamMapper;
+import com.servicedesk.mapper.TicketEventMapper;
 import com.servicedesk.mapper.TicketFeedbackMapper;
 import com.servicedesk.mapper.TicketMapper;
 import com.servicedesk.security.JwtUtil;
@@ -33,6 +35,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -72,6 +75,10 @@ class TicketFeedbackControllerTest {
   /** 工单 Mapper。 */
   @Autowired
   private TicketMapper ticketMapper;
+
+  /** 工单事件 Mapper，用于断言评价是否写时间线。 */
+  @Autowired
+  private TicketEventMapper ticketEventMapper;
 
   /** 回访 Mapper。 */
   @Autowired
@@ -173,6 +180,12 @@ class TicketFeedbackControllerTest {
 
     assertThat(ticketFeedbackMapper.selectCount(Wrappers.<TicketFeedback>lambdaQuery()
         .eq(TicketFeedback::getTicketId, ticket.getId()))).isEqualTo(1L);
+
+    TicketEvent event = singleEvent(ticket.getId());
+    assertThat(event.getType()).isEqualTo("FEEDBACK");
+    assertThat(event.getOperatorId()).isEqualTo(reporterA.getId());
+    assertThat(event.getContent()).isNull();
+    assertThat(objectMapper.readTree(event.getMetadata()).path("score").asInt()).isEqualTo(5);
   }
 
   /**
@@ -200,21 +213,29 @@ class TicketFeedbackControllerTest {
   }
 
   /**
-   * 未关闭的工单不能评价。
+   * 未关闭的工单不能评价：处理中与已解决都在拒绝范围内。
    *
    * @throws Exception MockMvc 调用异常
    */
   @Test
   @DisplayName("状态：未关闭工单评价返回 409")
   void shouldRejectUnclosedTicket() throws Exception {
-    Ticket ticket = insertTicket("RESOLVED", reporterA.getId());
-
-    mockMvc.perform(post("/tickets/{id}/feedback", ticket.getId())
+    Ticket resolved = insertTicket("RESOLVED", reporterA.getId());
+    mockMvc.perform(post("/tickets/{id}/feedback", resolved.getId())
             .contentType(MediaType.APPLICATION_JSON)
             .content(body(5, null))
             .header("Authorization", bearerOf(reporterA, Role.REPORTER)))
         .andExpect(status().isConflict())
         .andExpect(jsonPath("$.code").value(409))
+        .andExpect(jsonPath("$.message").value("工单未关闭，不能评价"));
+
+    // 处理期间的沟通走私信（RC-002），不能借用评价接口，避免进行中的工单产生回访数据
+    Ticket inProgress = insertTicket("IN_PROGRESS", reporterA.getId());
+    mockMvc.perform(post("/tickets/{id}/feedback", inProgress.getId())
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body(5, null))
+            .header("Authorization", bearerOf(reporterA, Role.REPORTER)))
+        .andExpect(status().isConflict())
         .andExpect(jsonPath("$.message").value("工单未关闭，不能评价"));
   }
 
@@ -244,6 +265,7 @@ class TicketFeedbackControllerTest {
     TicketFeedback feedback = ticketFeedbackMapper.selectOne(Wrappers.<TicketFeedback>lambdaQuery()
         .eq(TicketFeedback::getTicketId, ticket.getId()));
     assertThat(feedback.getScore()).isEqualTo(5);
+    assertThat(eventCount(ticket.getId())).isEqualTo(1L);
   }
 
   /**
@@ -329,6 +351,30 @@ class TicketFeedbackControllerTest {
       body.put("comment", comment);
     }
     return objectMapper.writeValueAsString(body);
+  }
+
+  /**
+   * 取工单唯一的一条时间线事件。
+   *
+   * @param ticketId 工单 ID
+   * @return 事件实体
+   */
+  private TicketEvent singleEvent(Long ticketId) {
+    List<TicketEvent> events = ticketEventMapper.selectList(Wrappers.<TicketEvent>lambdaQuery()
+        .eq(TicketEvent::getTicketId, ticketId));
+    assertThat(events).hasSize(1);
+    return events.get(0);
+  }
+
+  /**
+   * 统计工单的时间线事件条数。
+   *
+   * @param ticketId 工单 ID
+   * @return 事件条数
+   */
+  private long eventCount(Long ticketId) {
+    return ticketEventMapper.selectCount(Wrappers.<TicketEvent>lambdaQuery()
+        .eq(TicketEvent::getTicketId, ticketId));
   }
 
   /**

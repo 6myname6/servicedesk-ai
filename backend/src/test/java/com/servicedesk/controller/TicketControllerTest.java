@@ -10,6 +10,7 @@ import com.servicedesk.entity.SlaPolicy;
 import com.servicedesk.entity.SysUser;
 import com.servicedesk.entity.Ticket;
 import com.servicedesk.entity.TicketAttachment;
+import com.servicedesk.entity.TicketEvent;
 import com.servicedesk.entity.enums.DeviceStatus;
 import com.servicedesk.entity.enums.Role;
 import com.servicedesk.mapper.CustomerMapper;
@@ -17,6 +18,7 @@ import com.servicedesk.mapper.DeviceMapper;
 import com.servicedesk.mapper.SlaPolicyMapper;
 import com.servicedesk.mapper.SysUserMapper;
 import com.servicedesk.mapper.TicketAttachmentMapper;
+import com.servicedesk.mapper.TicketEventMapper;
 import com.servicedesk.mapper.TicketMapper;
 import com.servicedesk.security.JwtUtil;
 import org.junit.jupiter.api.AfterEach;
@@ -100,6 +102,10 @@ class TicketControllerTest {
   /** 附件 Mapper。 */
   @Autowired
   private TicketAttachmentMapper attachmentMapper;
+
+  /** 工单事件 Mapper，用于断言建单与挂附件是否写时间线。 */
+  @Autowired
+  private TicketEventMapper ticketEventMapper;
 
   /** 客户 Mapper。 */
   @Autowired
@@ -200,6 +206,14 @@ class TicketControllerTest {
     assertThat(saved.getSlaPolicyId()).isEqualTo(policy.getId());
     assertThat(saved.getPausedTotalMinutes()).isZero();
     assertThat(saved.getAiCorrected()).isZero();
+
+    TicketEvent event = singleEvent(saved.getId());
+    assertThat(event.getType()).isEqualTo("CREATE");
+    assertThat(event.getFromStatus()).isNull();
+    assertThat(event.getToStatus()).isEqualTo("NEW");
+    assertThat(event.getOperatorId()).isEqualTo(reporter.getId());
+    assertThat(event.getContent()).isNull();
+    assertThat(event.getMetadata()).isNull();
   }
 
   /**
@@ -342,6 +356,21 @@ class TicketControllerTest {
     Long ticketId = dataOf(result).path("id").asLong();
     assertThat(attachmentMapper.selectById(first.getId()).getTicketId()).isEqualTo(ticketId);
     assertThat(attachmentMapper.selectById(second.getId()).getTicketId()).isEqualTo(ticketId);
+
+    List<TicketEvent> events = eventsOf(ticketId);
+    assertThat(events).hasSize(3);
+    assertThat(events.get(0).getType()).isEqualTo("CREATE");
+    TicketEvent firstAttach = events.get(1);
+    TicketEvent secondAttach = events.get(2);
+    assertThat(firstAttach.getType()).isEqualTo("ATTACH");
+    assertThat(objectMapper.readTree(firstAttach.getMetadata()).path("action").asText())
+        .isEqualTo("upload");
+    assertThat(objectMapper.readTree(firstAttach.getMetadata()).path("attachmentId").asLong())
+        .isEqualTo(first.getId());
+    assertThat(objectMapper.readTree(firstAttach.getMetadata()).path("fileName").asText())
+        .isEqualTo("photo.jpg");
+    assertThat(objectMapper.readTree(secondAttach.getMetadata()).path("attachmentId").asLong())
+        .isEqualTo(second.getId());
   }
 
   /**
@@ -578,6 +607,30 @@ class TicketControllerTest {
     entity.setStatus(DeviceStatus.ACTIVE.name());
     deviceMapper.insert(entity);
     return entity;
+  }
+
+  /**
+   * 查询工单的全部时间线事件，按主键正序。
+   *
+   * @param ticketId 工单 ID
+   * @return 事件列表
+   */
+  private List<TicketEvent> eventsOf(Long ticketId) {
+    return ticketEventMapper.selectList(Wrappers.<TicketEvent>lambdaQuery()
+        .eq(TicketEvent::getTicketId, ticketId)
+        .orderByAsc(TicketEvent::getId));
+  }
+
+  /**
+   * 取工单唯一的一条时间线事件。
+   *
+   * @param ticketId 工单 ID
+   * @return 事件实体
+   */
+  private TicketEvent singleEvent(Long ticketId) {
+    List<TicketEvent> events = eventsOf(ticketId);
+    assertThat(events).hasSize(1);
+    return events.get(0);
   }
 
   /**

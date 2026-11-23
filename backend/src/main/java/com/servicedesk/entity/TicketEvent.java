@@ -17,7 +17,7 @@ import java.time.LocalDateTime;
  *
  * <p>
  * 时间线只追加不修改：本表没有 {@code updated_at}，也没有更新入口。
- * {@code operator_id} 为空表示系统事件（超时升级、暂停超限自动恢复）。
+ * {@code operator_id} 为空表示系统事件（如超时升级）。
  * </p>
  */
 @Data

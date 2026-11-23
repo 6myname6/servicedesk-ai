@@ -4,6 +4,7 @@ import com.servicedesk.common.api.PageResult;
 import com.servicedesk.common.api.Result;
 import com.servicedesk.dto.request.ticket.TicketAssignRequest;
 import com.servicedesk.dto.request.ticket.TicketCancelRequest;
+import com.servicedesk.dto.request.ticket.TicketCommentRequest;
 import com.servicedesk.dto.request.ticket.TicketCreateRequest;
 import com.servicedesk.dto.request.ticket.TicketFeedbackRequest;
 import com.servicedesk.dto.request.ticket.TicketQueryRequest;
@@ -11,9 +12,11 @@ import com.servicedesk.dto.request.ticket.TicketStatusTransitionRequest;
 import com.servicedesk.dto.request.ticket.TicketUpdateRequest;
 import com.servicedesk.entity.enums.Role;
 import com.servicedesk.security.RequiredRole;
+import com.servicedesk.service.TicketCommentService;
 import com.servicedesk.service.TicketService;
 import com.servicedesk.service.TicketTransitionService;
 import com.servicedesk.vo.TicketDetailVO;
+import com.servicedesk.vo.TicketEventVO;
 import com.servicedesk.vo.TicketFeedbackVO;
 import com.servicedesk.vo.TicketListItemVO;
 import jakarta.validation.Valid;
@@ -28,9 +31,11 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 /**
  * 工单接口，对应接口文档第 2 章（建单 2.2、列表 2.1、详情 2.3、编辑 2.4、取消 2.5、评价 2.6）
- * 与第 3 章工单流转（3.1 状态迁移、3.2 派单）。
+ * 与第 3 章工单流转（3.1 状态迁移、3.2 派单、3.3 处理记录、3.4 时间线）。
  *
  * <p>
  * 属于接口层，只做参数接收、{@code @Valid} 校验与响应包装，不写业务判断：
@@ -42,7 +47,8 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>
  * 建单只要求登录，报修人取当前登录用户（业务层从 {@code UserContext} 读取），
  * 不接收请求参数中的上报人；详情对所有角色开放，看到哪张单由数据范围决定。
- * 状态迁移走独立的 {@link TicketTransitionService}，其余接口走 {@link TicketService}。
+ * 状态迁移走独立的 {@link TicketTransitionService}，处理记录与时间线走
+ * {@link TicketCommentService}，其余接口走 {@link TicketService}。
  * </p>
  *
  * <p>
@@ -59,8 +65,11 @@ public class TicketController {
   /** 工单服务：建单、列表、详情、编辑、取消、评价、派单。 */
   private final TicketService ticketService;
 
-  /** 状态迁移服务：F-02 的七个流转动作，独立于工单主链路。 */
+  /** 状态迁移服务：F-02 的五个流转动作，独立于工单主链路。 */
   private final TicketTransitionService ticketTransitionService;
+
+  /** 处理记录与时间线服务：F-03 写入 COMMENT 事件，F-04 不分页读出时间线。 */
+  private final TicketCommentService ticketCommentService;
 
   /**
    * 创建工单。
@@ -168,7 +177,7 @@ public class TicketController {
   }
 
   /**
-   * 派单：把 NEW / REOPENED 工单指派给工程师。
+   * 派单：把 NEW 工单指派给工程师。
    *
    * <p>
    * 只有主管与管理员可调用。被派人必须是启用中的 {@code ENGINEER}，且属于主管管理的团队；
@@ -192,8 +201,8 @@ public class TicketController {
    * 状态迁移：按状态机把工单推进到目标状态。
    *
    * <p>
-   * 不标 {@code @RequiredRole}：同一接口对不同迁移有不同角色要求（接单 / 开始处理 / 等客户 /
-   * 客户回复 / 解决仅被派工程师，验收关闭 / 重开为报修人本人、主管、管理员），
+   * 不标 {@code @RequiredRole}：同一接口对不同迁移有不同角色要求（接单 / 开始处理 / 解决
+   * 仅被派工程师，验收通过 / 验收不通过为报修人本人、主管、管理员），
    * 单一注解无法表达。登录即可访问，角色、状态可达性与数据范围统一由业务层的
    * {@code TicketTransition} 表 + 访问守卫判定（F-02）。
    * </p>
@@ -208,6 +217,44 @@ public class TicketController {
     log.debug("收到工单状态迁移请求, ticketId={}, targetStatus={}, version={}",
         id, request.getTargetStatus(), request.getVersion());
     return Result.success(ticketTransitionService.transitionStatus(id, request));
+  }
+
+  /**
+   * 追加处理记录或内部备注。
+   *
+   * <p>
+   * 不标 {@code @RequiredRole}：数据范围内的四类角色都能写对客记录，只有内部备注限
+   * 工程师 / 主管 / 管理员。角色、工单状态与内容是否合法统一由业务层判定（400 / 404 / 409），
+   * Controller 不承担业务判断。
+   * </p>
+   *
+   * @param id      工单 ID
+   * @param request 处理记录入参，正文必填，{@code internal} 默认 false
+   * @return 新写入的事件，结构见接口文档附录 A.10
+   */
+  @PostMapping("/{id}/comments")
+  public Result<TicketEventVO> addComment(@PathVariable Long id,
+      @RequestBody @Valid TicketCommentRequest request) {
+    log.debug("收到追加处理记录请求, ticketId={}, internal={}, contentLength={}",
+        id, request.getInternal(), request.getContent() == null ? 0 : request.getContent().length());
+    return Result.success(ticketCommentService.addComment(id, request));
+  }
+
+  /**
+   * 查询工单时间线。
+   *
+   * <p>
+   * 不分页，也无筛选参数：一次返回全部可见事件，服务端硬上限 500 条。
+   * 报修人看不到内部备注，过滤由业务层在 SQL 中完成。
+   * </p>
+   *
+   * @param id 工单 ID
+   * @return 按时间正序的事件数组
+   */
+  @GetMapping("/{id}/events")
+  public Result<List<TicketEventVO>> listEvents(@PathVariable Long id) {
+    log.debug("收到工单时间线请求, ticketId={}", id);
+    return Result.success(ticketCommentService.listEvents(id));
   }
 
 }

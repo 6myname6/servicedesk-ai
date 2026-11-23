@@ -28,10 +28,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
+
 import org.springframework.transaction.annotation.Transactional;
 
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,7 +46,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * 属于接口层测试：启动完整上下文，走真实拦截器与 MySQL，数据由用例自建并依赖
  * {@code @Transactional} 回滚。重点守住四件事：越权与不存在返回同一个 404、
  * 待派单工单对主管不可见（过渡口径只属于列表）、SLA 的响应/解决两套超时口径、
- * 暂停期间读数冻结。
+ * 历史暂停字段不再影响读数。
  * </p>
  */
 @SpringBootTest
@@ -337,27 +336,23 @@ class TicketDetailControllerTest {
   }
 
   /**
-   * 暂停期间剩余分钟按暂停起点冻结：同一张单过一段时间再查，读数不变。
+   * 历史暂停字段不再参与读数：paused 恒 false，pausedTotalMinutes 恒 0。
    *
    * @throws Exception MockMvc 调用异常
    */
   @Test
-  @DisplayName("SLA：暂停中剩余分钟冻结在暂停起点")
-  void shouldFreezeRemainingWhilePaused() throws Exception {
+  @DisplayName("SLA：历史 paused_at 不影响读数")
+  void shouldIgnoreLegacyPausedFields() throws Exception {
     LocalDateTime now = LocalDateTime.now().withNano(0);
-    Ticket ticket = insertTicket("WAITING_CUSTOMER", reporterA.getId(), engineerA.getId(), teamA.getId(),
+    Ticket ticket = insertTicket("IN_PROGRESS", reporterA.getId(), engineerA.getId(), teamA.getId(),
         now.minusHours(1), now.plusHours(2));
-    markPaused(ticket.getId(), now.minusMinutes(10));
+    markLegacyPaused(ticket.getId(), now.minusMinutes(10));
 
-    MvcResult first = mockMvc.perform(get("/tickets/{id}", ticket.getId())
+    mockMvc.perform(get("/tickets/{id}", ticket.getId())
             .header("Authorization", bearerOf(admin, Role.ADMIN)))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.sla.paused").value(true))
-        .andReturn();
-    long firstRemaining = dataOf(first).path("sla").path("resolveRemainingMinutes").asLong();
-
-    // 暂停起点不变，deadline 也没动：即使 now 往后走，读数仍是「暂停那一刻的剩余」
-    assertThat(firstRemaining).isEqualTo(130L);
+        .andExpect(jsonPath("$.data.sla.paused").value(false))
+        .andExpect(jsonPath("$.data.sla.pausedTotalMinutes").value(0));
   }
 
   /**
@@ -377,19 +372,6 @@ class TicketDetailControllerTest {
             .header("Authorization", bearerOf(reporterA, Role.REPORTER)))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.data.sla").value(nullValue()));
-  }
-
-  /**
-   * 解析响应体中的 {@code data} 节点。
-   *
-   * @param result MockMvc 结果
-   * @return data 节点
-   * @throws Exception JSON 解析异常
-   */
-  private com.fasterxml.jackson.databind.JsonNode dataOf(MvcResult result) throws Exception {
-    return new com.fasterxml.jackson.databind.ObjectMapper()
-        .readTree(result.getResponse().getContentAsString(StandardCharsets.UTF_8))
-        .path("data");
   }
 
   /**
@@ -418,16 +400,16 @@ class TicketDetailControllerTest {
   }
 
   /**
-   * 把工单置为暂停中。
+   * 写入历史暂停字段，模拟 RC-001 之前的存量数据。
    *
    * @param ticketId 工单 ID
-   * @param pausedAt 暂停起点
+   * @param pausedAt 历史暂停起点
    */
-  private void markPaused(Long ticketId, LocalDateTime pausedAt) {
+  private void markLegacyPaused(Long ticketId, LocalDateTime pausedAt) {
     ticketMapper.update(null, Wrappers.<Ticket>lambdaUpdate()
         .eq(Ticket::getId, ticketId)
         .set(Ticket::getPausedAt, pausedAt)
-        .set(Ticket::getStatus, "WAITING_CUSTOMER"));
+        .set(Ticket::getPausedTotalMinutes, 60));
   }
 
   /**

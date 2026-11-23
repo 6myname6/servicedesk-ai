@@ -32,10 +32,10 @@ public class SlaStatusVO {
   /** 首次响应时间，未响应时为 null。 */
   private final LocalDateTime firstResponseAt;
 
-  /** 是否处于暂停计时（{@code WAITING_CUSTOMER}）。 */
+  /** 是否处于暂停计时；RC-001 已移除暂停机制，恒为 false，字段仅为兼容前端保留。 */
   private final boolean paused;
 
-  /** 累计暂停分钟数。 */
+  /** 累计暂停分钟数；暂停机制已移除，恒为 0。 */
   private final Integer pausedTotalMinutes;
 
   /** 响应剩余分钟数，负数表示已超时。 */
