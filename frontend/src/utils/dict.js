@@ -29,24 +29,41 @@ export const CATEGORY_LABELS = {
 /** 故障分类下拉选项。 */
 export const CATEGORY_OPTIONS = Object.entries(CATEGORY_LABELS).map(([value, label]) => ({ value, label }))
 
-/** 工单状态编码 → 中文名。 */
+/** 工单状态编码 → 中文名（RC-001：8 个状态）。 */
 export const STATUS_LABELS = {
   NEW: '待派单',
   ASSIGNED: '已派单',
   ACCEPTED: '已接单',
   IN_PROGRESS: '处理中',
-  WAITING_CUSTOMER: '等客户',
   RESOLVED: '已解决',
-  CLOSED: '已关闭',
-  REOPENED: '已重开',
+  CLOSED: '已完成',
+  REJECTED: '不通过',
   CANCELLED: '已取消'
 }
 
 /** 工单状态下拉选项。 */
 export const STATUS_OPTIONS = Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))
 
-/** 终态集合：列表里 SLA 列显示「已完成 / 已关闭」而不是倒计时。 */
-export const TERMINAL_STATUSES = ['RESOLVED', 'CLOSED', 'CANCELLED']
+/** 终态集合：列表 SLA 列显示终态文案而不是倒计时。 */
+export const TERMINAL_STATUSES = ['CLOSED', 'REJECTED', 'CANCELLED']
+
+/** 时间线事件类型 → 中文名，与开发文档 12.1 的事件字典一致。 */
+export const EVENT_LABELS = {
+  CREATE: '建单',
+  UPDATE: '编辑工单',
+  ASSIGN: '派单',
+  ACCEPT: '接单',
+  START: '开始处理',
+  COMMENT: '处理记录',
+  RESOLVE: '解决',
+  CLOSE: '验收通过',
+  REJECT: '验收不通过',
+  CANCEL: '取消工单',
+  FEEDBACK: '评价',
+  ESCALATE: '超时升级',
+  AI_SUGGEST: 'AI 建议',
+  ATTACH: '附件'
+}
 
 /** 紧急度编码 → 中文名。 */
 export const URGENCY_LABELS = {

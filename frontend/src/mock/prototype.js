@@ -121,7 +121,7 @@ export function demoDashboard() {
         ticketNo: 'TK20261121000039',
         title: '财务共享中心打印机频繁卡纸',
         urgency: 'P2',
-        status: 'WAITING_CUSTOMER',
+        status: 'IN_PROGRESS',
         assignee: '王敏',
         remainingMinutes: 26,
         deadline: offsetTime(26)
@@ -197,9 +197,10 @@ export function demoDashboard() {
       { status: 'ASSIGNED', count: 4 },
       { status: 'ACCEPTED', count: 3 },
       { status: 'IN_PROGRESS', count: 9 },
-      { status: 'WAITING_CUSTOMER', count: 6 },
       { status: 'RESOLVED', count: 7 },
-      { status: 'REOPENED', count: 2 }
+      { status: 'CLOSED', count: 6 },
+      { status: 'REJECTED', count: 2 },
+      { status: 'CANCELLED', count: 1 }
     ]
   }
 }

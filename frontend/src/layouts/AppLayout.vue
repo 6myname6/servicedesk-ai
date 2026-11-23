@@ -32,6 +32,13 @@ const MENUS = [
     roles: ['SUPERVISOR', 'ADMIN']
   },
   {
+    label: 'SLA 策略',
+    path: '/admin/sla',
+    icon: 'Timer',
+    match: ['/admin/sla'],
+    roles: ['ADMIN']
+  },
+  {
     label: '系统管理',
     path: '/admin/users',
     icon: 'Setting',

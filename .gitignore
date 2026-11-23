@@ -100,6 +100,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+# 构建时把 TMP 指到工作区产生的 esbuild / Node 编译缓存（可随时删除）
+.esbuild-tmp/
 
 # -------------------------------------------------------------
 # 7. Python 脚本（design/draw_mockups.py 等）产生的缓存
@@ -131,10 +133,11 @@ $RECYCLE.BIN/
 /docs/编码规范.md
 backend/src/main/resources/docs/开发排期.md
 backend/src/main/resources/docs/编码规范.md
+backend/src/main/resources/docs/开发文档.md
+backend/src/main/resources/docs/需求变化.md
 backend/src/test/java/com/servicedesk/acceptance/W1AcceptanceTest.java
 AGENTS.md
-backend/src/main/resources/docs/开发文档.md
-backend/src/main/resources/docs/需求变化.markdown
+
 # -------------------------------------------------------------
 # 10. 本机 nginx 运行时与部署产物（二进制、日志、前端拷贝都不入库）
 # -------------------------------------------------------------

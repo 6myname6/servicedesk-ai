@@ -23,9 +23,10 @@ const STATUS_COLORS = {
   ASSIGNED: '#1d4ed8',
   ACCEPTED: '#2563eb',
   IN_PROGRESS: '#f59e0b',
-  WAITING_CUSTOMER: '#7c3aed',
   RESOLVED: '#059669',
-  REOPENED: '#dc2626'
+  CLOSED: '#6b7a90',
+  REJECTED: '#dc2626',
+  CANCELLED: '#94a3b8'
 }
 
 /** 当前角色对应的数据范围说明。 */

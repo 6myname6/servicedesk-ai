@@ -12,6 +12,7 @@ import {
   LEVEL_LABELS,
   STATUS_LABELS,
   STATUS_OPTIONS,
+  TERMINAL_STATUSES,
   WARRANTY_STATUS_LABELS
 } from '@/utils/dict'
 import { formatDateTime, formatFileSize, formatMinutes, parseDateTime } from '@/utils/format'
@@ -19,31 +20,28 @@ import { formatDateTime, formatFileSize, formatMinutes, parseDateTime } from '@/
 /**
  * 工单详情：状态操作的全部动作定义。
  *
- * <p>target 取自开发文档 7.1 状态机，原型只做本页状态与时间线的本地变更。</p>
+ * <p>target 取自开发文档 7.13 的五动作状态机，原型只做本页状态与时间线的本地变更。</p>
  */
 const ACTIONS = {
   dispatch: { label: '派单', target: 'ASSIGNED', type: 'primary' },
   accept: { label: '接单', target: 'ACCEPTED', type: 'primary' },
   start: { label: '开始处理', target: 'IN_PROGRESS', type: 'primary' },
-  wait: { label: '等客户', target: 'WAITING_CUSTOMER' },
-  reply: { label: '客户回复', target: 'IN_PROGRESS', type: 'primary' },
   resolve: { label: '解决', target: 'RESOLVED', type: 'success' },
-  close: { label: '验收关闭', target: 'CLOSED', type: 'success' },
-  reopen: { label: '重开', target: 'REOPENED', type: 'danger' },
+  close: { label: '验收通过', target: 'CLOSED', type: 'success' },
+  reject: { label: '验收不通过', target: 'REJECTED', type: 'danger' },
   cancel: { label: '取消工单', target: 'CANCELLED', type: 'danger' }
 }
 
 /** 各状态可执行的动作，顺序即按钮顺序。 */
 const STATUS_ACTIONS = {
   NEW: ['dispatch', 'cancel'],
-  ASSIGNED: ['accept', 'dispatch', 'cancel'],
+  ASSIGNED: ['accept', 'cancel'],
   ACCEPTED: ['start', 'cancel'],
-  IN_PROGRESS: ['wait', 'resolve', 'cancel'],
-  WAITING_CUSTOMER: ['reply', 'cancel'],
-  RESOLVED: ['close', 'reopen'],
-  REOPENED: ['start', 'dispatch', 'cancel'],
-  // CLOSED / CANCELLED 为终态，按产品状态机不提供重开
+  IN_PROGRESS: ['resolve', 'cancel'],
+  RESOLVED: ['close', 'reject'],
+  // 三个终态没有出边；不通过后只能新建工单
   CLOSED: [],
+  REJECTED: [],
   CANCELLED: []
 }
 
@@ -106,7 +104,7 @@ const resolvePercent = computed(() => {
 })
 
 /** 是否终态：终态不再显示解决倒计时。 */
-const isTerminal = computed(() => ['RESOLVED', 'CLOSED', 'CANCELLED'].includes(previewStatus.value))
+const isTerminal = computed(() => TERMINAL_STATUSES.includes(previewStatus.value))
 
 /** 当前展示的 AI 建议。 */
 const visibleSuggestions = computed(() =>
@@ -137,7 +135,12 @@ function handlePreviewStatus(value) {
 async function runAction(action) {
   const fromLabel = STATUS_LABELS[previewStatus.value] || previewStatus.value
   const toLabel = STATUS_LABELS[action.target] || action.target
-  const extra = action.key === 'dispatch' ? '，指派给陈立（华东一线支持组）' : ''
+  const extra =
+    action.key === 'dispatch'
+      ? '，指派给陈立（华东一线支持组）'
+      : action.key === 'reject'
+        ? '，不通过后需新建工单'
+        : ''
   try {
     await ElMessageBox.confirm(
       `当前状态「${fromLabel}」→「${toLabel}」${extra}。确认执行「${action.label}」吗？`,

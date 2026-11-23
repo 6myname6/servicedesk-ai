@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 
+import { TERMINAL_STATUSES } from '@/utils/dict'
 import { formatMinutes, slaLevel } from '@/utils/format'
 
 /**
@@ -18,18 +19,29 @@ const props = defineProps({
   status: { type: String, default: '' }
 })
 
-/** 是否为终态（已解决 / 已关闭 / 已取消）。 */
-const isTerminal = computed(() => ['RESOLVED', 'CLOSED', 'CANCELLED'].includes(props.status))
+/** 是否为终态（已完成 / 不通过 / 已取消）。 */
+const isTerminal = computed(() => TERMINAL_STATUSES.includes(props.status))
 
 /** 终态文案。 */
 const terminalText = computed(() => {
-  if (props.status === 'RESOLVED') {
+  if (props.status === 'CLOSED') {
     return '已完成'
   }
-  if (props.status === 'CANCELLED') {
-    return '已取消'
+  if (props.status === 'REJECTED') {
+    return '不通过'
   }
-  return '已关闭'
+  return '已取消'
+})
+
+/** 终态颜色：已完成绿、不通过红、已取消灰。 */
+const terminalClass = computed(() => {
+  if (props.status === 'CLOSED') {
+    return 'sd-sla--done'
+  }
+  if (props.status === 'REJECTED') {
+    return 'sd-sla--danger'
+  }
+  return 'sd-sla--muted'
 })
 
 /** 非终态下的展示文本与颜色等级。 */
@@ -40,9 +52,7 @@ const level = computed(() => slaLevel(props.minutes, props.breached))
 </script>
 
 <template>
-  <span v-if="isTerminal" class="sd-sla" :class="{ 'sd-sla--done': status === 'RESOLVED' }">
-    {{ terminalText }}
-  </span>
+  <span v-if="isTerminal" class="sd-sla" :class="terminalClass">{{ terminalText }}</span>
   <span v-else class="sd-sla" :class="`sd-sla--${level}`">{{ text }}</span>
 </template>
 
@@ -64,5 +74,9 @@ const level = computed(() => slaLevel(props.minutes, props.breached))
 
 .sd-sla--done {
   color: var(--sd-green);
+}
+
+.sd-sla--muted {
+  color: #94a3b8;
 }
 </style>

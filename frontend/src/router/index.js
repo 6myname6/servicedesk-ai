@@ -108,6 +108,12 @@ const routes = [
         meta: { title: '团队管理', roles: ['ADMIN'] }
       },
       {
+        path: 'admin/sla',
+        name: 'admin-sla',
+        component: () => import('@/views/admin/SlaPolicyView.vue'),
+        meta: { title: 'SLA 策略', roles: ['ADMIN'] }
+      },
+      {
         path: '403',
         name: 'forbidden',
         component: () => import('@/views/ForbiddenView.vue'),

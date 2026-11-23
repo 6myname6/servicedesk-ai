@@ -54,22 +54,17 @@ const variant = computed(() => String(props.status || '').toLowerCase())
   color: #b45309;
 }
 
-.sd-status--waiting_customer {
-  background: var(--sd-purple-soft);
-  color: #6d28d9;
-}
-
 .sd-status--resolved {
   background: var(--sd-green-soft);
   color: var(--sd-green);
 }
 
 .sd-status--closed {
-  background: #eef1f6;
-  color: #6b7a90;
+  background: var(--sd-green-soft);
+  color: var(--sd-green);
 }
 
-.sd-status--reopened {
+.sd-status--rejected {
   background: var(--sd-red-soft);
   color: var(--sd-red);
 }
