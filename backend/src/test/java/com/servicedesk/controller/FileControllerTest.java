@@ -1,5 +1,6 @@
 package com.servicedesk.controller;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.servicedesk.common.context.LoginUser;
 import com.servicedesk.common.exception.BusinessException;
 import com.servicedesk.entity.SysUser;
@@ -137,7 +138,7 @@ class FileControllerTest {
         .andExpect(jsonPath("$.data.mimeType").value("image/jpeg"))
         .andExpect(jsonPath("$.data.createdAt").isNotEmpty());
 
-    List<TicketAttachment> saved = attachmentMapper.selectList(null);
+    List<TicketAttachment> saved = attachmentsOfUploader();
     assertThat(saved).hasSize(1);
     TicketAttachment record = saved.get(0);
     assertThat(record.getUploaderId()).isEqualTo(uploader.getId());
@@ -167,7 +168,7 @@ class FileControllerTest {
         .andExpect(jsonPath("$.message").value("不支持的文件类型"));
 
     verifyNoInteractions(fileStorageService);
-    assertThat(attachmentMapper.selectList(null)).isEmpty();
+    assertThat(attachmentsOfUploader()).isEmpty();
   }
 
   /**
@@ -260,7 +261,7 @@ class FileControllerTest {
         .andExpect(status().isServiceUnavailable())
         .andExpect(jsonPath("$.code").value(503));
 
-    assertThat(attachmentMapper.selectList(null)).isEmpty();
+    assertThat(attachmentsOfUploader()).isEmpty();
   }
 
   /**
@@ -382,6 +383,22 @@ class FileControllerTest {
     attachment.setCreatedAt(LocalDateTime.now());
     attachmentMapper.insert(attachment);
     return attachment;
+  }
+
+  /**
+   * 查询本次用例上传人产生的附件记录。
+   *
+   * <p>
+   * 不能直接用「全表为空」做断言：开发库里常有手工联调留下的未关联附件，
+   * 全表断言会随环境漂移而随机失败。用例只对自己造的数据负责。
+   * </p>
+   *
+   * @return 该上传人的附件列表，按主键正序
+   */
+  private List<TicketAttachment> attachmentsOfUploader() {
+    return attachmentMapper.selectList(Wrappers.<TicketAttachment>lambdaQuery()
+        .eq(TicketAttachment::getUploaderId, uploader.getId())
+        .orderByAsc(TicketAttachment::getId));
   }
 
   /**

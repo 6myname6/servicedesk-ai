@@ -2,9 +2,11 @@ package com.servicedesk.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.servicedesk.common.context.LoginUser;
+import com.servicedesk.entity.Customer;
 import com.servicedesk.entity.SysUser;
 import com.servicedesk.entity.Team;
 import com.servicedesk.entity.enums.Role;
+import com.servicedesk.mapper.CustomerMapper;
 import com.servicedesk.mapper.SysUserMapper;
 import com.servicedesk.mapper.TeamMapper;
 import com.servicedesk.security.JwtUtil;
@@ -27,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -78,6 +81,10 @@ class UserAdminControllerTest {
   @Autowired
   private TeamMapper teamMapper;
 
+  /** 客户 Mapper，用于造客户并验证客户联系人账号。 */
+  @Autowired
+  private CustomerMapper customerMapper;
+
   /** 密码编码器，用于校验落库密码确实是 BCrypt。 */
   @Autowired
   private PasswordEncoder passwordEncoder;
@@ -92,6 +99,9 @@ class UserAdminControllerTest {
   /** 本次用例新建的团队。 */
   private Team team;
 
+  /** 本次用例新建的客户，用于验证客户联系人账号。 */
+  private Customer customer;
+
   /** 本轮用例建过的用户 ID，结束后逐个清理其停用标记。 */
   private final List<Long> createdUserIds = new ArrayList<>();
 
@@ -105,6 +115,12 @@ class UserAdminControllerTest {
     team.setName("用户管理测试团队-" + System.nanoTime());
     team.setSupervisorId(adminUser.getId());
     teamMapper.insert(team);
+
+    customer = new Customer();
+    customer.setName("用户管理测试客户-" + System.nanoTime());
+    customer.setPhone("0792-0000000");
+    customer.setLevel("NORMAL");
+    customerMapper.insert(customer);
   }
 
   /**
@@ -293,6 +309,89 @@ class UserAdminControllerTest {
   }
 
   /**
+   * 新增客户联系人账号：只挂客户、不挂团队，响应回填客户名。
+   *
+   * @throws Exception MockMvc 调用异常
+   */
+  @Test
+  @DisplayName("归属：新增客户联系人只挂客户并回填客户名")
+  void shouldCreateReporterWithCustomer() throws Exception {
+    String username = "ut_cust_" + System.nanoTime();
+
+    mockMvc.perform(post("/admin/users")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(createBody(username, Role.REPORTER.name(), null, customer.getId()))
+            .header("Authorization", bearerOf(adminUser.getId(), Role.ADMIN)))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.customerId").value(customer.getId().intValue()))
+        .andExpect(jsonPath("$.data.customerName").value(customer.getName()))
+        .andExpect(jsonPath("$.data.teamId").value(nullValue()));
+
+    SysUser created = findByUsername(username);
+    assertThat(created.getCustomerId()).isEqualTo(customer.getId());
+    assertThat(created.getTeamId()).isNull();
+  }
+
+  /**
+   * 团队与客户同时传返回 400：一个账号只能有一种归属。
+   *
+   * @throws Exception MockMvc 调用异常
+   */
+  @Test
+  @DisplayName("归属：团队与客户同时传返回 400")
+  void shouldRejectBothTeamAndCustomer() throws Exception {
+    mockMvc.perform(post("/admin/users")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(createBody("ut_both_" + System.nanoTime(), Role.REPORTER.name(),
+                team.getId(), customer.getId()))
+            .header("Authorization", bearerOf(adminUser.getId(), Role.ADMIN)))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value(400))
+        .andExpect(jsonPath("$.message").value("所属团队与所属客户只能二选一"));
+  }
+
+  /**
+   * 客户 ID 指向不存在的客户返回 400。
+   *
+   * @throws Exception MockMvc 调用异常
+   */
+  @Test
+  @DisplayName("归属：客户不存在返回 400")
+  void shouldRejectUnknownCustomer() throws Exception {
+    mockMvc.perform(post("/admin/users")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(createBody("ut_nocust_" + System.nanoTime(), Role.REPORTER.name(),
+                null, 999_999_999L))
+            .header("Authorization", bearerOf(adminUser.getId(), Role.ADMIN)))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.message").value("客户不存在"));
+  }
+
+  /**
+   * 从团队切换为客户：团队列必须被显式清空，否则会出现两种归属同时存在。
+   *
+   * @throws Exception MockMvc 调用异常
+   */
+  @Test
+  @DisplayName("归属：团队切换为客户时显式清空团队")
+  void shouldSwitchTeamToCustomer() throws Exception {
+    SysUser target = insertUser("ut_switch_" + System.nanoTime(), "待切换",
+        Role.REPORTER.name(), team.getId());
+
+    mockMvc.perform(put("/admin/users/{id}", target.getId())
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(updateBody("切换后", Role.REPORTER.name(), null, customer.getId()))
+            .header("Authorization", bearerOf(adminUser.getId(), Role.ADMIN)))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.customerName").value(customer.getName()))
+        .andExpect(jsonPath("$.data.teamName").value(nullValue()));
+
+    SysUser updated = sysUserMapper.selectById(target.getId());
+    assertThat(updated.getCustomerId()).isEqualTo(customer.getId());
+    assertThat(updated.getTeamId()).isNull();
+  }
+
+  /**
    * 停用用户成功，状态落库为 0。
    *
    * @throws Exception MockMvc 调用异常
@@ -375,7 +474,7 @@ class UserAdminControllerTest {
   }
 
   /**
-   * 构造新增用户的请求体。
+   * 构造新增用户的请求体，默认挂本用例的团队。
    *
    * @param username 登录名
    * @param role     角色
@@ -383,12 +482,28 @@ class UserAdminControllerTest {
    * @throws Exception JSON 序列化异常
    */
   private String createBody(String username, String role) throws Exception {
+    return createBody(username, role, team.getId(), null);
+  }
+
+  /**
+   * 构造新增用户的请求体。
+   *
+   * @param username   登录名
+   * @param role       角色
+   * @param teamId     团队 ID，可为 null
+   * @param customerId 客户 ID，可为 null
+   * @return JSON 字符串
+   * @throws Exception JSON 序列化异常
+   */
+  private String createBody(String username, String role, Long teamId, Long customerId)
+      throws Exception {
     Map<String, Object> body = new LinkedHashMap<>();
     body.put("username", username);
     body.put("password", RAW_PASSWORD);
     body.put("displayName", "测试用户");
     body.put("role", role);
-    body.put("teamId", team.getId());
+    body.put("teamId", teamId);
+    body.put("customerId", customerId);
     body.put("phone", "13900000000");
     return objectMapper.writeValueAsString(body);
   }
@@ -403,10 +518,26 @@ class UserAdminControllerTest {
    * @throws Exception JSON 序列化异常
    */
   private String updateBody(String displayName, String role, Long teamId) throws Exception {
+    return updateBody(displayName, role, teamId, null);
+  }
+
+  /**
+   * 构造修改用户的请求体。
+   *
+   * @param displayName 显示名
+   * @param role        角色
+   * @param teamId      团队 ID，可为 null
+   * @param customerId  客户 ID，可为 null
+   * @return JSON 字符串
+   * @throws Exception JSON 序列化异常
+   */
+  private String updateBody(String displayName, String role, Long teamId, Long customerId)
+      throws Exception {
     Map<String, Object> body = new LinkedHashMap<>();
     body.put("displayName", displayName);
     body.put("role", role);
     body.put("teamId", teamId);
+    body.put("customerId", customerId);
     return objectMapper.writeValueAsString(body);
   }
 

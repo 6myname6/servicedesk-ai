@@ -25,8 +25,18 @@ public class UserUpdateRequest {
   @NotBlank(message = "角色不能为空")
   private String role;
 
-  /** 所属团队，可为空表示不分配团队；不为空时必须存在。 */
+  /**
+   * 所属团队，可为空表示不分配团队；不为空时必须存在。
+   *
+   * <p>
+   * 与 {@link #customerId} 互斥：传了客户就必须把团队置空，反之亦然，
+   * 两个都传返回 400。本接口按「整体覆盖」处理归属，不做增量合并。
+   * </p>
+   */
   private Long teamId;
+
+  /** 所属客户，可为空表示不关联客户；不为空时必须存在，且与 {@link #teamId} 互斥。 */
+  private Long customerId;
 
   /** 手机号，可为空。 */
   @Size(max = 20, message = "手机号不能超过 20 位")

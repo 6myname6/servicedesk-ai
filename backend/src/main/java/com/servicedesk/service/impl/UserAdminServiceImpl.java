@@ -10,9 +10,11 @@ import com.servicedesk.common.exception.BusinessException;
 import com.servicedesk.dto.request.admin.UserCreateRequest;
 import com.servicedesk.dto.request.admin.UserQueryRequest;
 import com.servicedesk.dto.request.admin.UserUpdateRequest;
+import com.servicedesk.entity.Customer;
 import com.servicedesk.entity.SysUser;
 import com.servicedesk.entity.Team;
 import com.servicedesk.entity.enums.Role;
+import com.servicedesk.mapper.CustomerMapper;
 import com.servicedesk.mapper.SysUserMapper;
 import com.servicedesk.mapper.TeamMapper;
 import com.servicedesk.security.UserStatusCache;
@@ -25,6 +27,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collection;
 import java.util.List;
@@ -64,6 +67,9 @@ public class UserAdminServiceImpl implements UserAdminService {
   /** 团队 Mapper，用于校验团队存在性与回填团队名。 */
   private final TeamMapper teamMapper;
 
+  /** 客户 Mapper，用于校验客户存在性与回填客户名；与团队互斥，最多用到一个。 */
+  private final CustomerMapper customerMapper;
+
   /** 密码编码器，与登录校验共用同一套 BCrypt 配置。 */
   private final PasswordEncoder passwordEncoder;
 
@@ -95,8 +101,10 @@ public class UserAdminServiceImpl implements UserAdminService {
 
     IPage<SysUser> page = sysUserMapper.selectPage(new Page<>(query.getPage(), query.getSize()), wrapper);
     Map<Long, String> teamNames = loadTeamNames(page.getRecords());
+    Map<Long, String> customerNames = loadCustomerNames(page.getRecords());
 
-    return PageResult.from(page, user -> toVO(user, teamNames.get(user.getTeamId())));
+    return PageResult.from(page, user -> toVO(user, nameOf(teamNames, user.getTeamId()),
+        nameOf(customerNames, user.getCustomerId())));
   }
 
   /**
@@ -121,7 +129,10 @@ public class UserAdminServiceImpl implements UserAdminService {
 
     Role role = parseRole(request.getRole());
     Long teamId = request.getTeamId();
+    Long customerId = request.getCustomerId();
+    requireExclusiveOrg(teamId, customerId);
     String teamName = requireTeam(teamId);
+    String customerName = requireCustomer(customerId);
 
     SysUser user = new SysUser();
     user.setUsername(username);
@@ -129,24 +140,31 @@ public class UserAdminServiceImpl implements UserAdminService {
     user.setDisplayName(request.getDisplayName().trim());
     user.setRole(role.name());
     user.setTeamId(teamId);
+    user.setCustomerId(customerId);
     user.setPhone(trimToNull(request.getPhone()));
     user.setEmail(email);
     user.setStatus(STATUS_ENABLED);
     sysUserMapper.insert(user);
 
-    log.info("新增用户成功, userId={}, username={}, role={}, operatorId={}",
-        user.getId(), username, role, UserContext.getUserId());
-    return toVO(user, teamName);
+    log.info("新增用户成功, userId={}, username={}, role={}, teamId={}, customerId={}, operatorId={}",
+        user.getId(), username, role, teamId, customerId, UserContext.getUserId());
+    return toVO(user, teamName, customerName);
   }
 
   /**
    * 修改用户资料。
+   *
+   * <p>
+   * 事务边界：主更新与「清空另一侧归属」的补充更新在同一事务内，
+   * 否则会出现团队已清空、客户没写进去的半成品账号。
+   * </p>
    *
    * @param id      用户 ID
    * @param request 修改入参
    * @return 修改后的用户信息
    */
   @Override
+  @Transactional(rollbackFor = Exception.class)
   public UserVO update(Long id, UserUpdateRequest request) {
     SysUser user = requireUser(id);
 
@@ -164,19 +182,31 @@ public class UserAdminServiceImpl implements UserAdminService {
     }
 
     Long teamId = request.getTeamId();
+    Long customerId = request.getCustomerId();
+    requireExclusiveOrg(teamId, customerId);
     String teamName = requireTeam(teamId);
+    String customerName = requireCustomer(customerId);
 
     String beforeRole = user.getRole();
     user.setDisplayName(request.getDisplayName().trim());
     user.setRole(role.name());
     user.setTeamId(teamId);
+    user.setCustomerId(customerId);
     user.setPhone(trimToNull(request.getPhone()));
     user.setEmail(email);
     sysUserMapper.updateById(user);
+    // updateById 跳过 null：从「团队」切到「客户」（或反向）时必须显式清空另一列，
+    // 否则两个归属会同时留在库里，违反互斥规则（编码规范 4.2）
+    if (teamId == null || customerId == null) {
+      sysUserMapper.update(null, Wrappers.<SysUser>lambdaUpdate()
+          .eq(SysUser::getId, id)
+          .set(teamId == null, SysUser::getTeamId, null)
+          .set(customerId == null, SysUser::getCustomerId, null));
+    }
 
-    log.info("修改用户成功, userId={}, role={} -> {}, teamId={}, operatorId={}",
-        id, beforeRole, role, teamId, operatorId);
-    return toVO(user, teamName);
+    log.info("修改用户成功, userId={}, role={} -> {}, teamId={}, customerId={}, operatorId={}",
+        id, beforeRole, role, teamId, customerId, operatorId);
+    return toVO(user, teamName, customerName);
   }
 
   /**
@@ -288,6 +318,46 @@ public class UserAdminServiceImpl implements UserAdminService {
   }
 
   /**
+   * 校验团队与客户归属互斥。
+   *
+   * <p>
+   * 一个账号要么是内部员工（挂团队），要么是客户联系人（挂客户），
+   * 同时有值会让「所属团队 / 所属客户」的展示与数据范围判断都失去唯一答案，
+   * 因此在写库前就拦住，返回 400 而不是靠数据库约束。
+   * </p>
+   *
+   * @param teamId     团队 ID，可为 null
+   * @param customerId 客户 ID，可为 null
+   * @throws BusinessException 两个都非空时抛出 400
+   */
+  private void requireExclusiveOrg(Long teamId, Long customerId) {
+    if (teamId != null && customerId != null) {
+      log.warn("用户归属校验失败：团队与客户只能二选一, teamId={}, customerId={}, operatorId={}",
+          teamId, customerId, UserContext.getUserId());
+      throw new BusinessException(400, "所属团队与所属客户只能二选一");
+    }
+  }
+
+  /**
+   * 校验客户存在并返回客户名。
+   *
+   * @param customerId 客户 ID，可为 null
+   * @return 客户名；customerId 为 null 时返回 null
+   * @throws BusinessException 客户不存在时抛出 400
+   */
+  private String requireCustomer(Long customerId) {
+    if (customerId == null) {
+      return null;
+    }
+    Customer customer = customerMapper.selectById(customerId);
+    if (customer == null) {
+      log.warn("客户不存在, customerId={}, operatorId={}", customerId, UserContext.getUserId());
+      throw new BusinessException(400, "客户不存在");
+    }
+    return customer.getName();
+  }
+
+  /**
    * 判断用户名是否已被占用。
    *
    * @param username  登录名
@@ -332,13 +402,48 @@ public class UserAdminServiceImpl implements UserAdminService {
   }
 
   /**
+   * 批量加载客户名。
+   *
+   * @param users 当前页用户
+   * @return 客户 ID 到客户名的映射，未关联客户的用户不包含在内
+   */
+  private Map<Long, String> loadCustomerNames(List<SysUser> users) {
+    Set<Long> customerIds = users.stream()
+        .map(SysUser::getCustomerId)
+        .filter(Objects::nonNull)
+        .collect(Collectors.toSet());
+    if (customerIds.isEmpty()) {
+      return Map.of();
+    }
+    Collection<Customer> customers = customerMapper.selectByIds(customerIds);
+    return customers.stream().collect(Collectors.toMap(Customer::getId, Customer::getName));
+  }
+
+  /**
+   * 从「ID → 名称」映射取名称，ID 为 null 时直接返回 null。
+   *
+   * <p>
+   * 不能直接 {@code map.get(null)}：空映射（{@code Map.of()}）对 null 键会抛 NPE，
+   * 而团队与客户互斥意味着至少有一列永远为 null，这个分支是常态而不是异常。
+   * </p>
+   *
+   * @param names ID 到名称的映射
+   * @param id    关联 ID，可为 null
+   * @return 名称；ID 为 null 或映射中没有该 ID 时返回 null
+   */
+  private String nameOf(Map<Long, String> names, Long id) {
+    return id == null ? null : names.get(id);
+  }
+
+  /**
    * 实体转视图对象。
    *
-   * @param user     用户实体
-   * @param teamName 团队名，可为 null
+   * @param user         用户实体
+   * @param teamName     团队名，可为 null
+   * @param customerName 客户名，可为 null
    * @return 不含密码字段的用户视图
    */
-  private UserVO toVO(SysUser user, String teamName) {
+  private UserVO toVO(SysUser user, String teamName, String customerName) {
     return UserVO.builder()
         .id(user.getId())
         .username(user.getUsername())
@@ -346,6 +451,8 @@ public class UserAdminServiceImpl implements UserAdminService {
         .role(user.getRole())
         .teamId(user.getTeamId())
         .teamName(teamName)
+        .customerId(user.getCustomerId())
+        .customerName(customerName)
         .phone(user.getPhone())
         .email(user.getEmail())
         .status(user.getStatus())

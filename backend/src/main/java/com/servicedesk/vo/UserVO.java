@@ -33,6 +33,12 @@ public class UserVO {
   /** 团队名，未分配团队时为 null。 */
   private final String teamName;
 
+  /** 所属客户 ID，客户联系人账号才有值；与团队 ID 互斥。 */
+  private final Long customerId;
+
+  /** 所属客户名，未关联客户时为 null。 */
+  private final String customerName;
+
   /** 手机号。 */
   private final String phone;
 

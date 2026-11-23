@@ -1,14 +1,16 @@
 package com.servicedesk.service;
 
+import com.servicedesk.dto.request.auth.ChangePasswordRequest;
 import com.servicedesk.dto.request.auth.LoginRequest;
 import com.servicedesk.vo.LoginVO;
 import com.servicedesk.vo.UserVO;
 
 /**
- * 认证服务，负责登录、登出与当前用户查询。
+ * 认证服务，负责登录、登出、当前用户查询与自助改密。
  *
  * <p>
  * 属于业务层。接口不暴露 token 解析细节，登出所需的 token 原文由 Controller 从请求头提取后传入。
+ * 改密只处理「本人改本人」，管理员重置密码仍走用户管理（M-01），两条路径不共用。
  * </p>
  */
 public interface AuthService {
@@ -43,4 +45,23 @@ public interface AuthService {
    * @throws com.servicedesk.common.exception.BusinessException 未登录或用户已被删除时抛 401
    */
   UserVO currentUser();
+
+  /**
+   * 修改当前登录用户的密码。
+   *
+   * <p>
+   * 事务边界：单表更新，只有一次 {@code UPDATE}；旧密码校验全部在写库前完成。
+   * 幂等性：不幂等，成功后旧密码立即失效，再用旧密码提交会返回 400。
+   * </p>
+   *
+   * <p>
+   * 改密不主动失效当前 token：用户刚完成身份校验，强制重登只会制造额外摩擦；
+   * 其他设备的 token 按有效期自然过期。若业务改为强制重登，属于契约变更，需先评审。
+   * </p>
+   *
+   * @param request 改密入参，原密码与新密码均必填
+   * @throws com.servicedesk.common.exception.BusinessException 未登录或账号已删除抛 401；
+   *                                                           原密码不正确、新密码与原密码相同抛 400
+   */
+  void changePassword(ChangePasswordRequest request);
 }

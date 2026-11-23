@@ -41,8 +41,17 @@ public class UserCreateRequest {
   @NotBlank(message = "角色不能为空")
   private String role;
 
-  /** 所属团队，可为空；不为空时必须存在。 */
+  /**
+   * 所属团队，可为空；不为空时必须存在。
+   *
+   * <p>
+   * 与 {@link #customerId} 互斥：内部员工挂团队，客户联系人挂客户，两个都传返回 400。
+   * </p>
+   */
   private Long teamId;
+
+  /** 所属客户，可为空；不为空时必须存在，且与 {@link #teamId} 互斥。 */
+  private Long customerId;
 
   /** 手机号，可为空。 */
   @Size(max = 20, message = "手机号不能超过 20 位")

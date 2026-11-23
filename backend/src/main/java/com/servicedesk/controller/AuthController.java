@@ -2,6 +2,7 @@ package com.servicedesk.controller;
 
 import com.servicedesk.common.api.Result;
 import com.servicedesk.common.exception.BusinessException;
+import com.servicedesk.dto.request.auth.ChangePasswordRequest;
 import com.servicedesk.dto.request.auth.LoginRequest;
 import com.servicedesk.security.ClientIpResolver;
 import com.servicedesk.service.AuthService;
@@ -13,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -81,6 +83,24 @@ public class AuthController {
   @GetMapping("/me")
   public Result<UserVO> me() {
     return Result.success(authService.currentUser());
+  }
+
+  /**
+   * 修改当前登录用户的密码。
+   *
+   * <p>
+   * 不接收 userId：只能改自己，避免登录用户越权改他人密码；
+   * 原密码校验在业务层完成，接口层只做格式校验。
+   * </p>
+   *
+   * @param request 改密入参，原密码与新密码均必填
+   * @return 无数据的成功响应
+   */
+  @PutMapping("/password")
+  public Result<Void> changePassword(@RequestBody @Valid ChangePasswordRequest request) {
+    log.debug("收到修改密码请求");
+    authService.changePassword(request);
+    return Result.success();
   }
 
   /**

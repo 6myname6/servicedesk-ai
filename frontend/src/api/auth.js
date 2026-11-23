@@ -27,3 +27,13 @@ export function logout() {
 export function fetchCurrentUser() {
   return http.get('/auth/me', { silent: true })
 }
+
+/**
+ * 修改当前登录用户的密码。
+ *
+ * @param {{oldPassword: string, newPassword: string}} payload 原密码与新密码
+ * @returns {Promise<void>}
+ */
+export function changePassword(payload) {
+  return http.put('/auth/password', payload)
+}

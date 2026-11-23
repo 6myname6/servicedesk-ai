@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { teamApi, userApi } from '@/api/admin'
+import { customerApi, teamApi, userApi } from '@/api/admin'
 import { ROLE_LABELS, ROLE_OPTIONS } from '@/utils/dict'
 
 /** 分页默认每页条数。 */
@@ -47,6 +47,7 @@ const userForm = reactive({
   displayName: '',
   role: 'ENGINEER',
   teamId: null,
+  customerId: null,
   phone: '',
   email: ''
 })
@@ -126,6 +127,27 @@ const teamRules = {
 /** 用户下拉选项，团队主管选择用。 */
 const userOptions = ref([])
 
+/** 客户下拉选项，用户归属选择用；与团队互斥。 */
+const customerOptions = ref([])
+
+/**
+ * 选择团队时清空客户：一个账号只能有一种归属，前端先做一次，避免提交后被 400 拒绝。
+ */
+function onTeamChange() {
+  if (userForm.teamId) {
+    userForm.customerId = null
+  }
+}
+
+/**
+ * 选择客户时清空团队，与 {@link onTeamChange} 对称。
+ */
+function onCustomerChange() {
+  if (userForm.customerId) {
+    userForm.teamId = null
+  }
+}
+
 /** 拉取用户列表。 */
 async function loadUsers() {
   userLoading.value = true
@@ -162,6 +184,12 @@ async function loadUserOptions() {
   userOptions.value = data?.records || []
 }
 
+/** 拉取客户下拉选项，取前 100 条。 */
+async function loadCustomerOptions() {
+  const data = await customerApi.page({ page: 1, size: 100 })
+  customerOptions.value = data?.records || []
+}
+
 /** 用户查询：回到第一页。 */
 function searchUsers() {
   userPage.page = 1
@@ -195,6 +223,7 @@ function resetUserForm() {
   userForm.displayName = ''
   userForm.role = 'ENGINEER'
   userForm.teamId = null
+  userForm.customerId = null
   userForm.phone = ''
   userForm.email = ''
   editingUserId.value = null
@@ -220,6 +249,7 @@ function openUserEdit(row) {
   userForm.displayName = row.displayName || ''
   userForm.role = row.role || 'ENGINEER'
   userForm.teamId = row.teamId ?? null
+  userForm.customerId = row.customerId ?? null
   userForm.phone = row.phone || ''
   userForm.email = row.email || ''
   userDialogVisible.value = true
@@ -243,6 +273,7 @@ async function submitUser() {
         displayName: userForm.displayName.trim(),
         role: userForm.role,
         teamId: userForm.teamId || null,
+        customerId: userForm.customerId || null,
         phone: userForm.phone || null,
         email: userForm.email || null
       })
@@ -252,6 +283,7 @@ async function submitUser() {
         displayName: userForm.displayName.trim(),
         role: userForm.role,
         teamId: userForm.teamId || null,
+        customerId: userForm.customerId || null,
         phone: userForm.phone || null,
         email: userForm.email || null
       })
@@ -361,6 +393,7 @@ onMounted(() => {
   loadUsers()
   loadTeams()
   loadUserOptions()
+  loadCustomerOptions()
 })
 </script>
 
@@ -433,8 +466,10 @@ onMounted(() => {
               </span>
             </template>
           </el-table-column>
-          <el-table-column label="团队" min-width="150">
-            <template #default="{ row }">{{ row.teamName || '—' }}</template>
+          <el-table-column label="归属" min-width="150">
+            <template #default="{ row }">
+              {{ row.teamName || row.customerName || '—' }}
+            </template>
           </el-table-column>
           <el-table-column prop="phone" label="手机号" width="140">
             <template #default="{ row }">
@@ -562,12 +597,30 @@ onMounted(() => {
             v-model="userForm.teamId"
             class="full-width"
             clearable
-            placeholder="管理员与不接单角色可留空"
+            placeholder="内部员工选择团队；客户联系人改用下一行的所属客户"
+            @change="onTeamChange"
           >
             <el-option
               v-for="item in teamRows"
               :key="item.id"
               :label="`${item.name}（${item.memberCount} 人）`"
+              :value="item.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="所属客户">
+          <el-select
+            v-model="userForm.customerId"
+            class="full-width"
+            clearable
+            filterable
+            placeholder="客户联系人选择所属客户；与团队只能二选一"
+            @change="onCustomerChange"
+          >
+            <el-option
+              v-for="item in customerOptions"
+              :key="item.id"
+              :label="item.name"
               :value="item.id"
             />
           </el-select>

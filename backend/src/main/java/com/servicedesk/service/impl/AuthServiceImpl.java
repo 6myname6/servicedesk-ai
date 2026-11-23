@@ -4,9 +4,12 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.servicedesk.common.context.LoginUser;
 import com.servicedesk.common.context.UserContext;
 import com.servicedesk.common.exception.BusinessException;
+import com.servicedesk.dto.request.auth.ChangePasswordRequest;
 import com.servicedesk.dto.request.auth.LoginRequest;
+import com.servicedesk.entity.Customer;
 import com.servicedesk.entity.SysUser;
 import com.servicedesk.entity.Team;
+import com.servicedesk.mapper.CustomerMapper;
 import com.servicedesk.mapper.SysUserMapper;
 import com.servicedesk.mapper.TeamMapper;
 import com.servicedesk.security.JwtUtil;
@@ -22,6 +25,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * 认证服务实现。
@@ -48,6 +52,9 @@ public class AuthServiceImpl implements AuthService {
 
     /** 团队 Mapper，仅用于回填 teamName。 */
     private final TeamMapper teamMapper;
+
+    /** 客户 Mapper，仅用于回填 customerName；客户联系人账号才有值。 */
+    private final CustomerMapper customerMapper;
 
     /** JWT 工具。 */
     private final JwtUtil jwtUtil;
@@ -150,6 +157,42 @@ public class AuthServiceImpl implements AuthService {
     }
 
     /**
+     * 修改当前登录用户的密码。
+     *
+     * <p>
+     * 只认 {@code UserContext} 里的用户 ID，请求体不接收 userId：
+     * 否则任何登录用户都能改别人的密码。旧密码校验放在写库前，
+     * 失败时不产生任何 UPDATE，也不重置登录失败计数——那是登录链路的职责。
+     * </p>
+     *
+     * @param request 改密入参，原密码与新密码均必填
+     * @throws BusinessException 未登录或账号已删除抛 401；原密码不正确、新旧密码相同抛 400
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void changePassword(ChangePasswordRequest request) {
+        Long userId = UserContext.getRequired().id();
+        SysUser user = sysUserMapper.selectById(userId);
+        if (user == null) {
+            log.warn("修改密码失败：账号已被删除, userId={}", userId);
+            throw new BusinessException(401, "登录已失效，请重新登录");
+        }
+        if (!passwordEncoder.matches(request.getOldPassword(), user.getPasswordHash())) {
+            log.warn("修改密码失败：原密码不正确, userId={}", userId);
+            throw new BusinessException(400, "原密码不正确");
+        }
+        if (request.getOldPassword().equals(request.getNewPassword())) {
+            log.warn("修改密码失败：新旧密码相同, userId={}", userId);
+            throw new BusinessException(400, "新密码不能与原密码相同");
+        }
+
+        user.setPasswordHash(passwordEncoder.encode(request.getNewPassword()));
+        sysUserMapper.updateById(user);
+        // 只记用户与结果，不记任何密码内容（明文或哈希）
+        log.info("修改密码成功, userId={}", userId);
+    }
+
+    /**
      * 记录一次登录失败，Redis 不可用时只告警不阻断。
      *
      * <p>
@@ -171,7 +214,12 @@ public class AuthServiceImpl implements AuthService {
     }
 
     /**
-     * 实体转视图对象，并回填团队名。
+     * 实体转视图对象，并回填团队名与客户名。
+     *
+     * <p>
+     * 团队与客户互斥，最多只有一次关联查询：内部账号查团队，客户联系人查客户。
+     * 关联记录被删时名称给 null，不让「客户档案被清理」把整次登录变成 500。
+     * </p>
      *
      * @param user 用户实体
      * @return 不含密码字段的用户视图
@@ -182,6 +230,11 @@ public class AuthServiceImpl implements AuthService {
             Team team = teamMapper.selectById(user.getTeamId());
             teamName = team == null ? null : team.getName();
         }
+        String customerName = null;
+        if (user.getCustomerId() != null) {
+            Customer customer = customerMapper.selectById(user.getCustomerId());
+            customerName = customer == null ? null : customer.getName();
+        }
         return UserVO.builder()
                 .id(user.getId())
                 .username(user.getUsername())
@@ -189,6 +242,8 @@ public class AuthServiceImpl implements AuthService {
                 .role(user.getRole())
                 .teamId(user.getTeamId())
                 .teamName(teamName)
+                .customerId(user.getCustomerId())
+                .customerName(customerName)
                 .phone(user.getPhone())
                 .email(user.getEmail())
                 .status(user.getStatus())

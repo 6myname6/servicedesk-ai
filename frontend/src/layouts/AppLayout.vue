@@ -66,6 +66,12 @@ const todayText = computed(() => {
 /** 头像上的姓名首字。 */
 const avatarText = computed(() => (auth.user?.displayName || '用').slice(0, 1))
 
+/** 侧栏副标题：角色 + 归属，团队与客户互斥，最多显示一个。 */
+const orgLabel = computed(() => {
+  const orgName = auth.user?.teamName || auth.user?.customerName
+  return orgName ? `${auth.roleLabel} · ${orgName}` : auth.roleLabel
+})
+
 /** 当前页不是建单页时才显示顶栏的建单入口。 */
 const showCreateButton = computed(() => route.name !== 'ticket-create')
 
@@ -82,6 +88,19 @@ function isActive(item) {
 /** 跳转新建工单。 */
 function goCreate() {
   router.push('/tickets/new')
+}
+
+/**
+ * 顶部头像下拉：个人中心跳转，其余命令（退出登录）走原逻辑。
+ *
+ * @param {string} command 下拉项命令
+ */
+function handleUserCommand(command) {
+  if (command === 'profile') {
+    router.push('/profile')
+    return
+  }
+  handleLogout()
 }
 
 /** 退出登录，二次确认后回到登录页。 */
@@ -126,13 +145,13 @@ async function handleLogout() {
         </router-link>
       </nav>
 
-      <div class="sd-sidebar__footer">
+      <router-link to="/profile" class="sd-sidebar__footer sd-sidebar__footer--link">
         <span class="sd-avatar sd-avatar--sm">{{ avatarText }}</span>
         <span class="sd-sidebar__user">
           <strong>{{ auth.user?.displayName || '未登录' }}</strong>
-          <em>{{ auth.roleLabel }}{{ auth.user?.teamName ? ` · ${auth.user.teamName}` : '' }}</em>
+          <em>{{ orgLabel }}</em>
         </span>
-      </div>
+      </router-link>
     </aside>
 
     <div class="sd-main">
@@ -153,7 +172,7 @@ async function handleLogout() {
             <span>新建工单</span>
           </el-button>
           <span class="sd-topbar__date mono">{{ todayText }}</span>
-          <el-dropdown trigger="click" @command="handleLogout">
+          <el-dropdown trigger="click" @command="handleUserCommand">
             <span class="sd-user-entry">
               <span class="sd-avatar">{{ avatarText }}</span>
               <el-icon class="sd-user-entry__caret"><ArrowDown /></el-icon>
@@ -163,7 +182,8 @@ async function handleLogout() {
                 <el-dropdown-item disabled>
                   {{ auth.user?.displayName }} · {{ auth.roleLabel }}
                 </el-dropdown-item>
-                <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
+                <el-dropdown-item command="profile" divided>个人中心</el-dropdown-item>
+                <el-dropdown-item command="logout">退出登录</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -294,6 +314,18 @@ async function handleLogout() {
   gap: 10px;
   padding: 16px 18px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* 左下角账号区整块可点击，进入个人中心 */
+.sd-sidebar__footer--link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.sd-sidebar__footer--link:hover {
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .sd-sidebar__user {

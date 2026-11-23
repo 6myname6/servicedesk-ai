@@ -39,6 +39,16 @@ public class SysUser {
   /** 所属团队 ID，逻辑外键 team.id。 */
   private Long teamId;
 
+  /**
+   * 所属客户 ID，逻辑外键 customer.id，可为空。
+   *
+   * <p>
+   * 与 {@link #teamId} 互斥：内部员工挂团队、客户联系人挂客户，不允许同时有值。
+   * 互斥与客户存在性由业务层校验，数据库只负责存储。
+   * </p>
+   */
+  private Long customerId;
+
   /** 手机号。 */
   private String phone;
 

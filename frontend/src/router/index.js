@@ -34,6 +34,12 @@ const routes = [
         meta: { title: '工作台' }
       },
       {
+        path: 'profile',
+        name: 'profile',
+        component: () => import('@/views/ProfileView.vue'),
+        meta: { title: '个人中心' }
+      },
+      {
         path: 'tickets',
         name: 'tickets',
         component: () => import('@/views/tickets/TicketListView.vue'),
