@@ -22,6 +22,7 @@
 ```mermaid
 erDiagram
     TEAM ||--o{ SYS_USER : "team_id"
+    CUSTOMER ||--o{ SYS_USER : "customer_id"
     TEAM ||--o{ TICKET : "team_id"
     SYS_USER ||--o{ TICKET : "reporter/assignee"
     CUSTOMER ||--o{ DEVICE : "customer_id"
@@ -41,6 +42,7 @@ erDiagram
         varchar username UK
         varchar role
         bigint team_id FK
+        bigint customer_id FK
         tinyint status
     }
 
@@ -158,7 +160,7 @@ erDiagram
 
 | # | 表名 | 职责 | 预估量 |
 | --- | --- | --- | --- |
-| 1 | `sys_user` | 账号、角色、团队归属 | 百级 |
+| 1 | `sys_user` | 账号、角色、团队或客户归属 | 百级 |
 | 2 | `team` | 团队与主管 | 十级 |
 | 3 | `customer` | 客户档案 | 千级 |
 | 4 | `device` | 设备档案、保修 | 万级 |
@@ -179,7 +181,8 @@ erDiagram
 
 | 关系 | 基数 | 外键 | 说明 |
 | --- | --- | --- | --- |
-| 团队 → 用户 | 1:N | `sys_user.team_id` | 一个团队多个成员 |
+| 团队 → 用户 | 1:N | `sys_user.team_id` | 一个团队多个成员；与 `customer_id` 互斥 |
+| 客户 → 用户 | 1:N | `sys_user.customer_id` | 一个客户可有多个联系人账号；与 `team_id` 互斥 |
 | 团队 → 工单 | 1:N | `ticket.team_id` | 工单归属团队，用于主管数据范围 |
 | 用户 → 工单（报修） | 1:N | `ticket.reporter_id` | 报修人 |
 | 用户 → 工单（处理） | 1:N | `ticket.assignee_id` | 当前处理工程师 |
@@ -208,7 +211,8 @@ erDiagram
 | `password_hash` | VARCHAR(100) | 否 | — | BCrypt |
 | `display_name` | VARCHAR(32) | 否 | — | 显示名 |
 | `role` | VARCHAR(16) | 否 | — | `REPORTER/ENGINEER/SUPERVISOR/ADMIN` |
-| `team_id` | BIGINT | 是 | NULL | 所属团队 |
+| `team_id` | BIGINT | 是 | NULL | 所属团队；与 `customer_id` 互斥 |
+| `customer_id` | BIGINT | 是 | NULL | 所属客户（客户联系人账号）；与 `team_id` 互斥，逻辑外键 `customer.id` |
 | `phone` | VARCHAR(20) | 是 | NULL | 手机号 |
 | `email` | VARCHAR(64) | 是 | NULL | 邮箱，唯一；邮箱验证码注册时必填，管理员创建的账号可为空 |
 | `status` | TINYINT | 否 | 1 | 1 启用 / 0 停用 |
