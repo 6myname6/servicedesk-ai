@@ -19,7 +19,8 @@ import java.util.Set;
  * <p>
  * 覆盖范围刻意只包含状态迁移接口（PATCH /tickets/{id}/status）可执行的动作：
  * 派单（7.12）与取消（7.11.1）各有独立接口，不在本表；因此
- * {@link TicketStatus#ASSIGNED} 与 {@link TicketStatus#CANCELLED} 只能作为某些动作的目标状态出现，
+ * {@link TicketStatus#ASSIGNED} 与 {@link TicketStatus#CANCELLED}
+ * 只能作为某些动作的目标状态出现，
  * 永远不会成为本表可执行迁移的结果之一。表里没有的组合一律视为非法迁移（409）。
  * </p>
  *

@@ -107,13 +107,19 @@ public class TicketTransitionServiceImpl implements TicketTransitionService {
   @Override
   @Transactional(rollbackFor = Exception.class)
   public TicketDetailVO transitionStatus(Long id, TicketStatusTransitionRequest request) {
+    // 1) 身份与数据范围：工程师只可见本人单、主管只可见本团队单，越权与不存在都由守卫折成 404，
+    //    所以本方法后面不再判 403 级的「他单」问题
     LoginUser operator = UserContext.getRequired();
     TicketScope scope = ticketScopeResolver.resolve(operator);
     Ticket ticket = ticketAccessGuard.requireVisible(id, scope, operator);
+    // 2) 乐观锁前置：版本过期先报 409，避免基于旧快照算时间戳并在后面覆盖掉别人的更新
     ticketAccessGuard.assertVersionMatches(ticket, request.getVersion(), operator);
 
+    // 3) 字典翻译：库里存字符串，非法取值在 from() 里抛 400，不进迁移表；null 也在这里被挡住
     TicketStatus current = TicketStatus.from(ticket.getStatus());
     TicketStatus target = TicketStatus.from(request.getTargetStatus());
+    // 4) 查迁移表：命中即同时拿到「写哪种事件 + 目标状态 + 允许角色」；查不到说明这条流转不存在，按 409 处理。
+    //    惰性 lambda 保证只在失败路径打日志，命中时零开销
     TicketTransition transition = TicketTransition.resolve(current, target)
         .orElseThrow(() -> {
           log.warn("状态迁移被拒绝：迁移不合法, ticketId={}, from={}, to={}, operatorId={}",
@@ -121,11 +127,17 @@ public class TicketTransitionServiceImpl implements TicketTransitionService {
           return new BusinessException(409,
               "当前状态 " + current.name() + " 不可迁移到 " + target.name());
         });
+    // 5) 角色鉴权放到最后：动作本身不合法时无论谁来点都是 409，先暴露「流转不存在」比先暴露「你没权限」更准确；
+    //    行级归属（本单处理人 / 本团队）已在上一步折成 404，这里只判动作级角色
     assertTransitionAllowed(transition, ticket, operator);
 
+    // 6) 迁前状态先留存：时间线要分别记录 from 与 to，实体状态一改就取不到原值
     String fromStatus = ticket.getStatus();
+    // 7) 基准时刻只取一次并截到秒：状态、时间戳、事件三者必须同源，且与 DATETIME(0) 精度一致
     LocalDateTime now = LocalDateTime.now(clock).withNano(0);
+    // 8) 只改内存实体：状态 + 该动作专属的时间戳 / SLA 副作用，落库统一由下一步一次 UPDATE 完成
     applyTransition(ticket, transition, now);
+    // 9) 带版本号条件更新；影响行数为 0 说明并发期间已被他人改过，409 让整个事务回滚
     if (ticketMapper.updateById(ticket) == 0) {
       log.warn("状态迁移版本冲突, ticketId={}, operatorId={}, requestVersion={}",
           id, operator.id(), request.getVersion());
@@ -134,14 +146,16 @@ public class TicketTransitionServiceImpl implements TicketTransitionService {
     // updateById 跳过 null 字段，暂停标记与解决时间必须显式 set 才能清空（编码规范 4.2）
     clearNullableColumns(ticket.getId(), transition);
 
+    // 10) 追加一条时间线：只写不改，与状态变更同事务，避免「状态变了但时间线没有」
     String comment = StringUtils.hasText(request.getComment()) ? request.getComment().trim() : null;
     ticketEventMapper.insert(
         buildTransitionEvent(ticket.getId(), transition, fromStatus, comment, operator.id(), now));
 
-    // 备注原文不进日志：可能带客户现场细节，只记录长度
+    // 11) 成功日志：备注原文不进日志，可能带客户现场细节，只记录长度
     log.info("状态迁移成功, ticketId={}, transition={}, from={}, to={}, operatorId={}, commentLength={}",
         id, transition, fromStatus, transition.targetStatus(), operator.id(),
         comment == null ? 0 : comment.length());
+    // 12) 重查一次再组装响应：拿数据库侧 version / updated_at，保证与详情接口口径一致
     return ticketAssembler.assembleDetail(ticketMapper.selectById(id), now);
   }
 
