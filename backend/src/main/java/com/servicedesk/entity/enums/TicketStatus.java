@@ -2,6 +2,8 @@ package com.servicedesk.entity.enums;
 
 import com.servicedesk.common.exception.BusinessException;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -37,6 +39,20 @@ public enum TicketStatus {
     CANCELLED;
 
     /**
+     * 终态名称列表，供 SQL 条件（{@code NOT IN}）使用。
+     *
+     * <p>
+     * 由 {@link #isTerminal()} 派生，避免「内存判定」与「SQL 名单」两处各自维护：
+     * 新增或调整终态时只改 {@link #isTerminal()} 一处。仅用于拼查询条件，
+     * 入参校验必须走 {@link #from(String)}，不能拿本列表当字典。
+     * </p>
+     */
+    public static final List<String> TERMINAL_NAMES = Arrays.stream(values())
+            .filter(TicketStatus::isTerminal)
+            .map(Enum::name)
+            .toList();
+
+    /**
      * 严格解析状态，用于列表筛选与状态迁转入参。
      *
      * <p>
@@ -59,5 +75,24 @@ public enum TicketStatus {
             }
         }
         throw new BusinessException(400, "工单状态不合法: " + raw);
+    }
+
+    /**
+     * 判断是否为终态（{@code CLOSED} / {@code REJECTED} / {@code CANCELLED}）。
+     *
+     * <p>
+     * 终态的业务语义是「SLA 停止计时」：详情、列表与超时升级扫描三处共用这一判断。
+     * 各自散写三个状态名，新增状态时必然漏改一处，出现「已关闭工单仍在告警」。
+     * </p>
+     *
+     * <p>
+     * 注意与「是否已完成验收」区分：评价只允许 {@code CLOSED}，不能用本方法替代
+     * {@code status == CLOSED}，否则 {@code REJECTED} / {@code CANCELLED} 会被误放行。
+     * </p>
+     *
+     * @return 终态返回 true，流转中的状态返回 false
+     */
+    public boolean isTerminal() {
+        return this == CLOSED || this == REJECTED || this == CANCELLED;
     }
 }

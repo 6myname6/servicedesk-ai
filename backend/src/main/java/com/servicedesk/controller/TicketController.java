@@ -15,6 +15,7 @@ import com.servicedesk.security.RequiredRole;
 import com.servicedesk.service.TicketCommentService;
 import com.servicedesk.service.TicketService;
 import com.servicedesk.service.TicketTransitionService;
+import com.servicedesk.vo.SlaStatusVO;
 import com.servicedesk.vo.TicketDetailVO;
 import com.servicedesk.vo.TicketEventVO;
 import com.servicedesk.vo.TicketFeedbackVO;
@@ -255,6 +256,24 @@ public class TicketController {
   public Result<List<TicketEventVO>> listEvents(@PathVariable Long id) {
     log.debug("收到工单时间线请求, ticketId={}", id);
     return Result.success(ticketCommentService.listEvents(id));
+  }
+
+  /**
+   * 查询工单 SLA 倒计时状态（S-02）。
+   *
+   * <p>
+   * 数据范围内用户可读，不限制角色：能不能看由业务层按数据范围判定，越权返回 404。
+   * 剩余分钟按请求时刻实时计算，终态照常返回剩余值但两个超时标记恒为 false。
+   * 响应结构见接口文档 5.5 与附录 A.9。
+   * </p>
+   *
+   * @param id 工单 ID
+   * @return SLA 状态；历史数据无策略与 deadline 时 {@code data} 为 null
+   */
+  @GetMapping("/{id}/sla")
+  public Result<SlaStatusVO> getTicketSlaStatus(@PathVariable Long id) {
+    log.debug("收到工单 SLA 状态请求, ticketId={}", id);
+    return Result.success(ticketService.getTicketSlaStatus(id));
   }
 
 }

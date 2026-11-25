@@ -45,6 +45,7 @@ import com.servicedesk.service.support.TicketAttachEventWriter;
 import com.servicedesk.service.support.TicketAttachmentLinker;
 import com.servicedesk.service.support.TicketNoGenerator;
 import com.servicedesk.service.support.TicketScopeResolver;
+import com.servicedesk.vo.SlaStatusVO;
 import com.servicedesk.vo.TicketDetailVO;
 import com.servicedesk.vo.TicketFeedbackVO;
 import com.servicedesk.vo.TicketListItemVO;
@@ -443,6 +444,31 @@ public class TicketServiceImpl implements TicketService {
                 id, assignee.getId(), assignee.getTeamId(), fromStatus, operator.id(),
                 comment == null ? 0 : comment.length());
         return ticketAssembler.assembleDetail(ticketMapper.selectById(id), now);
+    }
+
+    /**
+     * 查询工单的 SLA 倒计时状态（S-02）。
+     *
+     * <p>
+     * 与详情共用装配器与同一套判定：先按数据范围取可见工单（越权与不存在统一折成 404），
+     * 再用「本次请求时刻」实时计算剩余分钟，不读任何落库的派生值。
+     * </p>
+     *
+     * <p>
+     * 纯读，不加事务；{@code now} 只取一次并截到秒，避免同一条响应出现两种口径。
+     * </p>
+     *
+     * @param id 工单 ID
+     * @return SLA 状态；历史数据无策略与 deadline 时返回 null
+     * @throws BusinessException 工单不存在或不在当前用户数据范围内时抛出 404
+     */
+    @Override
+    public SlaStatusVO getTicketSlaStatus(Long id) {
+      LoginUser operator = UserContext.getRequired();
+      TicketScope scope = ticketScopeResolver.resolve(operator);
+      Ticket ticket = ticketAccessGuard.requireVisible(id, scope, operator);
+      LocalDateTime now = LocalDateTime.now(clock).withNano(0);
+      return ticketAssembler.assembleSla(ticket, now);
     }
 
     /**

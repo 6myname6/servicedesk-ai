@@ -135,7 +135,7 @@ public class TicketAssembler {
                 .assignee(assignee == null ? null
                         : new TicketDetailVO.UserBrief(assignee.getId(), assignee.getDisplayName()))
                 .team(team == null ? null : new TicketDetailVO.TeamBrief(team.getId(), team.getName()))
-                .sla(buildSlaDetail(ticket, now))
+                .sla(assembleSla(ticket, now))
                 .ai(null)
                 .attachments(attachments.stream().map(this::toAttachmentVO).toList())
                 .createdAt(ticket.getCreatedAt())
@@ -316,9 +316,11 @@ public class TicketAssembler {
         Long remaining = null;
         boolean breached = false;
         if (ticket.getResolveDeadline() != null) {
-            // RC-001 后没有暂停口径，列表与详情都按当前时刻计算
+            // RC-001 后没有暂停口径，列表与详情都按当前时刻计算；剩余分钟照常展示，
+            // 但终态已停止计时，不再标记超时，否则已关闭工单会在列表里一直标红
             remaining = Duration.between(now, ticket.getResolveDeadline()).toMinutes();
-            breached = now.isAfter(ticket.getResolveDeadline());
+            breached = now.isAfter(ticket.getResolveDeadline())
+                    && !TicketStatus.from(ticket.getStatus()).isTerminal();
         }
         return TicketListItemVO.builder()
                 .id(ticket.getId())
@@ -338,19 +340,24 @@ public class TicketAssembler {
     }
 
     /**
-     * 组装 SLA 状态（附录 A.9）。
+     * 组装 SLA 状态（附录 A.9），详情内嵌与 {@code GET /tickets/{id}/sla} 共用。
      *
      * <p>
      * deadline 直接取工单上的冻结值，绝不在读路径上按策略重算；剩余分钟与超时状态分开计算，
      * 因为 {@code Duration.toMinutes()} 向零截断，剩余 0 分钟与超时不足 1 分钟无法区分。
-     * 终态（CLOSED / REJECTED / CANCELLED）不计超时；RC-001 后暂停字段恒为 false / 0。
+     * 终态不计超时（见 {@link TicketStatus#isTerminal()}）；RC-001 后暂停字段恒为 false / 0。
      * </p>
      *
-     * @param ticket 工单实体
-     * @param now    本次请求时刻
+     * <p>
+     * 本方法只做结构转换、不判权限：调用方必须先用 {@code TicketAccessGuard} 完成数据范围校验，
+     * 两条读路径（详情、独立 SLA 接口）因此共用同一套口径。
+     * </p>
+     *
+     * @param ticket 已确认存在且在数据范围内的工单
+     * @param now    本次请求时刻，同一条响应只能有一个基准
      * @return SLA 状态；策略与两个 deadline 全为空的历史数据返回 null
      */
-    private SlaStatusVO buildSlaDetail(Ticket ticket, LocalDateTime now) {
+    public SlaStatusVO assembleSla(Ticket ticket, LocalDateTime now) {
         if (ticket.getSlaPolicyId() == null
                 && ticket.getResponseDeadline() == null
                 && ticket.getResolveDeadline() == null) {
@@ -358,10 +365,7 @@ public class TicketAssembler {
         }
         SlaPolicy policy = ticket.getSlaPolicyId() == null
                 ? null : slaPolicyMapper.selectById(ticket.getSlaPolicyId());
-        TicketStatus status = TicketStatus.from(ticket.getStatus());
-        boolean terminal = status == TicketStatus.CLOSED
-                || status == TicketStatus.REJECTED
-                || status == TicketStatus.CANCELLED;
+        boolean terminal = TicketStatus.from(ticket.getStatus()).isTerminal();
 
         long responseRemaining = ticket.getResponseDeadline() == null ? 0
                 : Duration.between(now, ticket.getResponseDeadline()).toMinutes();

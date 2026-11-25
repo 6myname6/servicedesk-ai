@@ -8,6 +8,7 @@ import com.servicedesk.dto.request.ticket.TicketCreateRequest;
 import com.servicedesk.dto.request.ticket.TicketFeedbackRequest;
 import com.servicedesk.dto.request.ticket.TicketQueryRequest;
 import com.servicedesk.dto.request.ticket.TicketUpdateRequest;
+import com.servicedesk.vo.SlaStatusVO;
 import com.servicedesk.vo.TicketDetailVO;
 import com.servicedesk.vo.TicketFeedbackVO;
 import com.servicedesk.vo.TicketListItemVO;
@@ -140,4 +141,22 @@ public interface TicketService {
    *                           非工程师、未加入团队或不属于本团队抛 400
    */
   TicketDetailVO assign(Long id, TicketAssignRequest request);
+
+  /**
+   * 查询工单的 SLA 倒计时状态（S-02，接口文档 5.5）。
+   *
+   * <p>
+   * 事务边界：只读，不加事务。deadline 取建单时冻结的值，剩余分钟按本次请求时刻实时计算，
+   * 不落库；终态工单照常返回剩余分钟，但两个 {@code *Breached} 恒为 false。
+   * </p>
+   *
+   * <p>
+   * 幂等性：纯查询，多次调用结果只随时间推进变化，不写任何数据。
+   * </p>
+   *
+   * @param id 工单 ID
+   * @return SLA 状态；越权与不存在统一 404；历史数据无策略与 deadline 时返回 null
+   * @throws BusinessException 工单不存在或不在当前用户数据范围内时抛出 404
+   */
+  SlaStatusVO getTicketSlaStatus(Long id);
 }
