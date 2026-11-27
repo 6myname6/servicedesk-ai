@@ -8,6 +8,7 @@ import com.servicedesk.entity.Ticket;
 import com.servicedesk.entity.TicketEvent;
 import com.servicedesk.entity.enums.TicketEventType;
 import com.servicedesk.entity.enums.TicketStatus;
+import com.servicedesk.entity.sladelayqueue.SlaDelayQueueMessage;
 import com.servicedesk.mapper.TicketEventMapper;
 import com.servicedesk.mapper.TicketMapper;
 import com.servicedesk.service.SlaEscalationService;
@@ -26,7 +27,15 @@ import java.util.List;
  * SLA 超时升级实现（S-03），对应开发文档 7.2 与接口文档第 5 章。
  *
  * <p>
- * 属于业务实现层。核心链路固定为「先占位、再写事件」：
+ * 属于业务实现层，有两个入口，共用同一套「先占位、再写事件」的链路：
+ * </p>
+ * <ol>
+ * <li>{@link #escalateOne(Long, String)}：延迟队列消费端在 deadline 到点时逐条调用（准点路径）；</li>
+ * <li>{@link #escalateOverdue()}：每分钟扫描兜底，补偿投递失败、Redis 不可用与历史数据（补偿路径）。</li>
+ * </ol>
+ *
+ * <p>
+ * 单条链路固定为三步：
  * </p>
  * <ol>
  * <li>按索引 {@code idx_sla_response} / {@code idx_sla_resolve}
@@ -39,13 +48,14 @@ import java.util.List;
  * 关键约束：
  * </p>
  * <ul>
- * <li>幂等：条件更新带 {@code *_escalated_at IS NULL}，重复扫描与多实例并发都只成功一次；
- * 同时带上「已过 deadline、未响应 / 未解决、非终态」，避免扫描期间刚被处理的工单被误升级；</li>
+ * <li>幂等：条件更新带 {@code *_escalated_at IS NULL}，重复扫描、重复投递与多实例并发都只成功一次；
+ * 同时带上「已过 deadline、未响应 / 未解决、非终态」，避免队列消息早到或期间刚被处理的工单被误升级；</li>
  * <li>终态：{@code CLOSED} / {@code REJECTED} / {@code CANCELLED} 停止计时，不再升级；
- * 判定统一取 {@link TicketStatus#isTerminal()} 派生的 {@link TicketStatus#TERMINAL_NAMES}，
+ * 判定统一取 {@link TicketStatus#isTerminal()} 派生的
+ * {@link TicketStatus#TERMINAL_NAMES}，
  * 不在此处另列状态名，避免与读模型口径分叉；</li>
  * <li>批量：单轮每类最多 {@value #BATCH_SIZE} 条，积压超过上限时下一分钟继续，避免长事务；</li>
- * <li>事务：整轮一个事务，标记与事件同生共死；失败整体回滚，下一分钟重试；</li>
+ * <li>事务：整轮扫描一个事务、单条升级一个事务，标记与事件同生共死；失败整体回滚，下一分钟重试；</li>
  * <li>时间：一律取注入的 {@link Clock}，禁止无参 {@code now()}，便于单测固定时刻。</li>
  * </ul>
  */
@@ -56,12 +66,6 @@ public class SlaEscalationServiceImpl implements SlaEscalationService {
 
     /** 单轮每类超时最多处理的条数：防止历史欠账一次性拉起长事务，超出的下一分钟继续。 */
     private static final int BATCH_SIZE = 200;
-
-    /** 升级类型：响应超时，写入 {@code metadata.escalationType}。 */
-    private static final String TYPE_RESPONSE = "RESPONSE";
-
-    /** 升级类型：解决超时，写入 {@code metadata.escalationType}。 */
-    private static final String TYPE_RESOLVE = "RESOLVE";
 
     /** 工单 Mapper，用于扫描超时工单与条件更新升级时间。 */
     private final TicketMapper ticketMapper;
@@ -86,7 +90,7 @@ public class SlaEscalationServiceImpl implements SlaEscalationService {
      * @return 本轮实际升级的次数（响应 + 解决）
      */
     @Override
-    @Scheduled(cron = "0 * * * * *", zone = "Asia/Shanghai")
+    @Scheduled(cron = "0  * * * * *", zone = "Asia/Shanghai")
     @Transactional(rollbackFor = Exception.class)
     public int escalateOverdue() {
         // 基准时刻只取一次并截到秒：扫描条件、升级标记与事件时间必须同源
@@ -102,6 +106,56 @@ public class SlaEscalationServiceImpl implements SlaEscalationService {
                     responseCount, resolveCount, now);
         }
         return total;
+    }
+
+    /**
+     * 升级单张工单的某一类超时（延迟队列准点路径）。
+     *
+     * <p>
+     * 先读一次工单拿到被突破的 deadline（事件正文要用），再交给与扫描完全相同的条件更新抢占；
+     * 抢占失败一律安静跳过：消息早到、工单已被接单 / 解决 / 取消、已被另一路径升级，都属于正常情况。
+     * </p>
+     *
+     * <p>
+     * 事务边界：单条升级一个事务，标记与事件同生共死；由消费端通过接口调用，走 Spring 代理。
+     * </p>
+     *
+     * @param ticketId       工单 ID
+     * @param escalationType 升级类型，{@code RESPONSE} 或 {@code RESOLVE}
+     * @return 抢到升级权并写入事件返回 {@code true}
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public boolean escalateOne(Long ticketId, String escalationType) {
+        if (ticketId == null) {
+            log.warn("SLA 延迟消息工单 ID 为空，忽略");
+            return false;
+        }
+        Ticket ticket = ticketMapper.selectById(ticketId);
+        if (ticket == null) {
+            // 建单事务回滚、工单被物理删除后消息仍可能留在队列里，属于可预期的脏消息
+            log.warn("SLA 延迟消息指向的工单不存在，忽略, ticketId={}, type={}", ticketId, escalationType);
+            return false;
+        }
+        LocalDateTime now = LocalDateTime.now(clock).withNano(0);
+        if (SlaDelayQueueMessage.TYPE_RESPONSE.equals(escalationType)) {
+            if (!claimResponse(ticketId, now)) {
+                return false;
+            }
+            ticketEventMapper.insert(buildEscalateEvent(
+                    ticketId, SlaDelayQueueMessage.TYPE_RESPONSE, "响应", ticket.getResponseDeadline(), now));
+            return true;
+        }
+        if (SlaDelayQueueMessage.TYPE_RESOLVE.equals(escalationType)) {
+            if (!claimResolve(ticketId, now)) {
+                return false;
+            }
+            ticketEventMapper.insert(buildEscalateEvent(
+                    ticketId, SlaDelayQueueMessage.TYPE_RESOLVE, "解决", ticket.getResolveDeadline(), now));
+            return true;
+        }
+        log.warn("SLA 延迟消息升级类型非法，忽略, ticketId={}, type={}", ticketId, escalationType);
+        return false;
     }
 
     /**
@@ -128,7 +182,8 @@ public class SlaEscalationServiceImpl implements SlaEscalationService {
                 continue;
             }
             ticketEventMapper.insert(buildEscalateEvent(
-                    ticket.getId(), TYPE_RESPONSE, "响应", ticket.getResponseDeadline(), now));
+                    ticket.getId(), SlaDelayQueueMessage.TYPE_RESPONSE, "响应",
+                    ticket.getResponseDeadline(), now));
             escalated++;
         }
         return escalated;
@@ -158,7 +213,8 @@ public class SlaEscalationServiceImpl implements SlaEscalationService {
                 continue;
             }
             ticketEventMapper.insert(buildEscalateEvent(
-                    ticket.getId(), TYPE_RESOLVE, "解决", ticket.getResolveDeadline(), now));
+                    ticket.getId(), SlaDelayQueueMessage.TYPE_RESOLVE, "解决",
+                    ticket.getResolveDeadline(), now));
             escalated++;
         }
         return escalated;

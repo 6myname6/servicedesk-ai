@@ -45,6 +45,7 @@ import com.servicedesk.service.support.TicketAttachEventWriter;
 import com.servicedesk.service.support.TicketAttachmentLinker;
 import com.servicedesk.service.support.TicketNoGenerator;
 import com.servicedesk.service.support.TicketScopeResolver;
+import com.servicedesk.service.support.SlaDeadlinePublisher;
 import com.servicedesk.vo.SlaStatusVO;
 import com.servicedesk.vo.TicketDetailVO;
 import com.servicedesk.vo.TicketFeedbackVO;
@@ -150,6 +151,9 @@ public class TicketServiceImpl implements TicketService {
     /** 附件关联器，负责校验与回填 {@code ticket_id}。 */
     private final TicketAttachmentLinker ticketAttachmentLinker;
 
+    /** SLA deadline 投递器，建单与紧急度重算后把两个 deadline 投到延迟队列。 */
+    private final SlaDeadlinePublisher slaDeadlinePublisher;
+
     /** JSON 工具，把编辑变更的字段名写进事件 metadata；不解析业务正文。 */
     private final ObjectMapper objectMapper;
 
@@ -185,6 +189,8 @@ public class TicketServiceImpl implements TicketService {
         Ticket ticket = buildTicket(request, customer, device, category, urgency, policy,
                 operator.id(), now, responseDeadline, resolveDeadline);
         insertWithUniqueTicketNo(ticket);
+        // deadline 已落库，投递失败不影响建单：延迟队列失败时由每分钟扫描兜底
+        slaDeadlinePublisher.publish(ticket);
         // 建单事件先于附件事件：同一秒内先有 CREATE，再按挂载顺序追加 ATTACH
         ticketEventMapper.insert(buildCreateEvent(ticket.getId(), operator.id(), now));
         // 回填与插入同事务：附件被并发抢占时抛 409，连工单与事件一起回滚
@@ -280,6 +286,10 @@ public class TicketServiceImpl implements TicketService {
             log.warn("编辑工单版本冲突, ticketId={}, operatorId={}, requestVersion={}",
                     id, operator.id(), request.getVersion());
             throw new BusinessException(409, TicketAccessGuard.MSG_VERSION_CONFLICT);
+        }
+        if (changes.urgencyChanged()) {
+            // 新 deadline 落库后按新时刻重新投递；旧消息到点会被条件更新判掉，不会重复升级
+            slaDeadlinePublisher.publish(ticket);
         }
         // 有变更才写事件：空更新在上一分支已返回，时间线不应出现「什么都没改」的记录
         ticketEventMapper.insert(buildUpdateEvent(ticket.getId(), changes.fields(), operator.id(), now));

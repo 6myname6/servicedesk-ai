@@ -35,4 +35,23 @@ public interface SlaEscalationService {
    * @return 本轮实际升级的次数（响应 + 解决，含同一工单的两类）
    */
   int escalateOverdue();
+
+  /**
+   * 升级单张工单的某一类超时，供延迟队列消费端在 deadline 到点时调用。
+   *
+   * <p>
+   * 与 {@link #escalateOverdue()} 共用同一套条件更新：方法内部重新读库并按
+   * 「未升级 + 未响应 / 未解决 + 已过 deadline + 非终态」抢占，抢到才写事件。
+   * 因此消息早到、重投、工单在投递后已被接单或取消，都只会得到 {@code false}，不会误升级。
+   * </p>
+   *
+   * <p>
+   * 事务边界：单条升级一个事务，标记与事件同生共死。
+   * </p>
+   *
+   * @param ticketId       工单 ID
+   * @param escalationType 升级类型，{@code RESPONSE} 或 {@code RESOLVE}
+   * @return 抢到升级权并写入事件返回 {@code true}；工单不存在、类型非法、条件不满足返回 {@code false}
+   */
+  boolean escalateOne(Long ticketId, String escalationType);
 }

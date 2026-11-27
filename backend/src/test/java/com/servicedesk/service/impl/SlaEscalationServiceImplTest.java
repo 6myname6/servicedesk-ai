@@ -249,6 +249,114 @@ class SlaEscalationServiceImplTest {
   }
 
   /**
+   * 延迟队列路径：到点的响应超时单被升级，写标记与一条系统事件。
+   *
+   * @throws Exception JSON 解析异常
+   */
+  @Test
+  @DisplayName("单条升级：响应到点写升级标记与事件")
+  void shouldEscalateOneByQueueMessage() throws Exception {
+    LocalDateTime now = LocalDateTime.now().withNano(0);
+    Ticket ticket = insertTicket("ASSIGNED", now.minusMinutes(1), now.plusHours(2));
+
+    boolean escalated = slaEscalationService.escalateOne(ticket.getId(), "RESPONSE");
+
+    assertThat(escalated).isTrue();
+    Ticket updated = ticketMapper.selectById(ticket.getId());
+    assertThat(updated.getResponseEscalatedAt()).isNotNull();
+    assertThat(updated.getResolveEscalatedAt()).isNull();
+    List<TicketEvent> events = escalateEventsOf(ticket.getId());
+    assertThat(events).hasSize(1);
+    assertThat(objectMapper.readTree(events.get(0).getMetadata()).path("escalationType").asText())
+        .isEqualTo("RESPONSE");
+  }
+
+  /**
+   * 延迟队列路径的幂等：同一条消息重复消费只有第一次成功，事件不重复。
+   */
+  @Test
+  @DisplayName("单条升级：重复消费只升级一次")
+  void shouldEscalateOneOnlyOnce() {
+    LocalDateTime now = LocalDateTime.now().withNano(0);
+    Ticket ticket = insertTicket("IN_PROGRESS", now.minusMinutes(1), now.plusHours(2));
+
+    boolean first = slaEscalationService.escalateOne(ticket.getId(), "RESPONSE");
+    boolean second = slaEscalationService.escalateOne(ticket.getId(), "RESPONSE");
+
+    assertThat(first).isTrue();
+    assertThat(second).isFalse();
+    assertThat(escalateEventsOf(ticket.getId())).hasSize(1);
+  }
+
+  /**
+   * 消息早到：deadline 还没过时不升级，消息被安静丢弃。
+   */
+  @Test
+  @DisplayName("单条升级：未到时限不升级")
+  void shouldNotEscalateBeforeDeadlineByQueueMessage() {
+    LocalDateTime now = LocalDateTime.now().withNano(0);
+    Ticket ticket = insertTicket("NEW", now.plusMinutes(30), now.plusHours(4));
+
+    boolean escalated = slaEscalationService.escalateOne(ticket.getId(), "RESPONSE");
+
+    assertThat(escalated).isFalse();
+    assertThat(ticketMapper.selectById(ticket.getId()).getResponseEscalatedAt()).isNull();
+    assertThat(escalateEventsOf(ticket.getId())).isEmpty();
+  }
+
+  /**
+   * 已响应：响应类消息到点也抢不到升级权。
+   */
+  @Test
+  @DisplayName("单条升级：已响应不升级响应超时")
+  void shouldNotEscalateResponseAfterFirstResponseByQueueMessage() {
+    LocalDateTime now = LocalDateTime.now().withNano(0);
+    Ticket ticket = insertTicket("IN_PROGRESS", now.minusMinutes(10), now.plusHours(2));
+    ticketMapper.update(null, Wrappers.<Ticket>lambdaUpdate()
+        .eq(Ticket::getId, ticket.getId())
+        .set(Ticket::getFirstResponseAt, now.minusMinutes(5)));
+
+    assertThat(slaEscalationService.escalateOne(ticket.getId(), "RESPONSE")).isFalse();
+    assertThat(escalateEventsOf(ticket.getId())).isEmpty();
+  }
+
+  /**
+   * 终态：解决类消息到点也不升级。
+   */
+  @Test
+  @DisplayName("单条升级：终态不升级")
+  void shouldNotEscalateTerminalTicketByQueueMessage() {
+    LocalDateTime now = LocalDateTime.now().withNano(0);
+    Ticket ticket = insertTicket("CLOSED", now.minusHours(3), now.minusHours(2));
+
+    assertThat(slaEscalationService.escalateOne(ticket.getId(), "RESOLVE")).isFalse();
+    assertThat(ticketMapper.selectById(ticket.getId()).getResolveEscalatedAt()).isNull();
+    assertThat(escalateEventsOf(ticket.getId())).isEmpty();
+  }
+
+  /**
+   * 升级类型不在字典内：不升级、不写事件。
+   */
+  @Test
+  @DisplayName("单条升级：类型非法不处理")
+  void shouldRejectUnknownEscalationType() {
+    LocalDateTime now = LocalDateTime.now().withNano(0);
+    Ticket ticket = insertTicket("ASSIGNED", now.minusHours(1), now.minusHours(1));
+
+    assertThat(slaEscalationService.escalateOne(ticket.getId(), "BOGUS")).isFalse();
+    assertThat(escalateEventsOf(ticket.getId())).isEmpty();
+  }
+
+  /**
+   * 工单不存在（建单事务回滚后的滞留消息）：记录日志并忽略，不抛异常。
+   */
+  @Test
+  @DisplayName("单条升级：工单不存在不抛异常")
+  void shouldIgnoreMissingTicket() {
+    assertThat(slaEscalationService.escalateOne(-1L, "RESPONSE")).isFalse();
+  }
+
+  /**
    * 查询某张工单的 ESCALATE 事件，按写入顺序返回。
    *
    * @param ticketId 工单 ID
